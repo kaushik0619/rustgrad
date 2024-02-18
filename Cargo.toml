@@ -14,3 +14,7 @@ regex = "1.5"
 deep-flatten = "0.1.0"
 libloading = "0.5"
 lru = "0.12.2"
+dirs ="3.0.2"
+rusqlite = {version = "0.31.0", features = ["trace"]}
+serde = "1.0"
+serde-pickle = "1.0"

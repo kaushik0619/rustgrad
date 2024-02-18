@@ -1,1 +1,4 @@
 /target
+Cargo.lock
+.vscode/settings.json
+src/main.rs

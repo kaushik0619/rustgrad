@@ -1,10 +1,12 @@
-use num_traits::{Num, NumCast, One};
+use num_traits::{ Num, One};
+use std::borrow::Borrow;
+use std::cell::RefCell;
+use std::env::{temp_dir};
 use std::iter::{ Product};
 use std::num::NonZeroUsize;
 use std::ops::Mul;
-use std::str::FromStr;
 use std::usize::MAX;
-use std::{default, env, result, vec};
+use std::{env, vec};
 use lazy_static::lazy_static;
 use std::collections::{HashSet, HashMap};
 use colored::*;
@@ -13,11 +15,49 @@ use std::iter::Flatten;
 use libloading::{Library, Symbol};
 use lru::LruCache;
 use std::sync::{Mutex, Arc};
+use std::path::{Path};
+use std::error::Error;
+use std::fmt::{self};
+use std::time::{Instant};
+use dirs::home_dir;
+use rusqlite::{Connection, params};
+use std::fs;
 lazy_static! {
-    static ref OSX:bool = cfg!(target_os = "macos");
-    static ref CI: bool = env::var("CI").is_ok();
-    //adjust the CACHE size dynamically
-    static ref CACHE: Arc<Mutex<LruCache<Arc<String>, Arc<String>>>> = Arc::new(Mutex::new(LruCache::new(NonZeroUsize::new(MAX).unwrap())));
+    static ref OSX: Arc<bool> = Arc::new(cfg!(target_os = "macos"));
+    static ref CI: Arc<bool> = Arc::new(env::var("CI").is_ok());
+    //adjust the CACHE_LRU size dynamically
+    static ref CACHE_LRU: Arc<Mutex<LruCache<Arc<String>, Arc<String>>>> = Arc::new(Mutex::new(LruCache::new(NonZeroUsize::new(MAX).unwrap())));
+    
+    pub static ref DEBUG: Arc<Mutex<ContextVar>> = Arc::new(Mutex::new(ContextVar::new("DEBUG", 0)));
+    pub static ref IMAGE: Arc<Mutex<ContextVar>> = Arc::new(Mutex::new(ContextVar::new("IMAGE", 0)));
+    pub static ref WINO: Arc<Mutex<ContextVar>> = Arc::new(Mutex::new(ContextVar::new("WINO", 0)));
+    pub static ref BEAM: Arc<Mutex<ContextVar>> = Arc::new(Mutex::new(ContextVar::new("BEAM", 0)));
+    pub static ref NOOPT: Arc<Mutex<ContextVar>> = Arc::new(Mutex::new(ContextVar::new("NOOPT", 0)));
+    pub static ref GRAPH: Arc<Mutex<ContextVar>> = Arc::new(Mutex::new(ContextVar::new("GRAPH", 0)));
+
+    
+    pub static ref GRAPHPATH: Arc<String> =  match getenv("GRAPHPATH", "/temp/net".to_string()){
+        Ok(s) => Arc::new(s),
+        Err(s) => Arc::new(s)
+    };
+
+
+    pub static ref CACHE_DIR: Arc<String> = match getenv("XDG_CACHE_HOME", home_dir().map_or("".to_string(), |home| home.join(if *Arc::clone(&OSX) { "Library/Caches" } else { ".cache" }).to_string_lossy().into_owned())){
+        Ok(s) => Arc::new(s),
+        Err(s) => Arc::new(s)
+    };
+    pub static ref CACHEDB: Arc<String> = match getenv("CACHEDB", Path::new(Arc::clone(&CACHE_DIR).as_ref()).join("rustgrad").join("cache_db").canonicalize().expect("Failed to get abs path").to_string_lossy().to_owned().to_string()){
+        Ok(s) => Arc::new(s),
+        Err(s) => Arc::new(s)
+    };
+    pub static ref CACHELEVEL: Arc<String> = match getenv("CACHELEVEL", 2.to_string()){
+        Ok(s) => Arc::new(s),
+        Err(s) => Arc::new(s)
+    };
+
+
+    pub static ref VERSION:Arc<usize> = Arc::new(1);
+    pub static ref DB_CONNECTION: Arc<Mutex<Option<Connection>>> = Arc::new(Mutex::new(None));
 }
 
 pub fn prod<T>(x: impl IntoIterator<Item = T>) -> T
@@ -293,7 +333,7 @@ pub fn get_contraction(old_shape: &[usize], new_shape: &[usize]) -> Option<Vec<V
 }
 
 pub fn to_function_name(s: &str) -> String {
-    let cache_clone = Arc::clone(&CACHE);
+    let cache_clone = Arc::clone(&CACHE_LRU);
     let mut cache = cache_clone.lock().unwrap();
 
     if let Some(result) = cache.get(&Arc::new(s.to_string())) {
@@ -316,23 +356,289 @@ pub fn to_function_name(s: &str) -> String {
     result
 }
 
-pub fn getenv(key: &str, default: String) -> String {
-    let cache_clone = Arc::clone(&CACHE);
+pub fn getenv(key: &str, default: String) -> Result<String, String> {
+    let cache_clone = Arc::clone(&CACHE_LRU);
     let mut cache = cache_clone.lock().unwrap();
 
     if let Some(result) = cache.get(&Arc::new(key.to_string())) {
-        return Arc::clone(result).as_str().to_string();
+        return Ok(Arc::clone(result).as_str().to_string());
     }
 
     match env::var(key) {
         Ok(value) => {
             let result = value.parse().unwrap_or_else(|_| default.clone());
             cache.put(Arc::new(key.to_string()), Arc::new(result.clone()));
-            result
+            Ok(result)
         }
         Err(_) => {
             cache.put(Arc::new(key.to_string()), Arc::new(default.clone()));
-            default
+            Err(default)
         }
     }
+}
+
+pub fn temp(x: String) -> String {
+    let temp_dir = temp_dir();
+    let temp_path = Path::new(&temp_dir).join(x);
+    temp_path.to_string_lossy().into_owned()
+}
+
+//xxxxxxxxxxxxxxxx TO BE DEPRECATED AND REPLACED BY panic! OR Result enum xxxxxxxxxxxxxxxxxxxx
+#[derive(Debug)]
+pub struct GraphError {
+    message: Option<String>,
+}
+
+impl GraphError {
+    fn new(message: Option<String>) -> Self {
+        GraphError { message }
+    }
+}
+
+impl fmt::Display for GraphError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        if let Some(ref message) = self.message {
+            write!(f, "Graph error: {}", message)
+        } else {
+            write!(f, "Graph error")
+        }
+    }
+}
+impl Error for GraphError {}
+
+// xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+
+pub struct Context {
+    stack: Arc<RefCell<Vec<HashMap<String, isize>>>>,
+}
+
+impl Context {
+    fn new() -> Self {
+        Context {
+            stack: Arc::new(RefCell::new(vec![HashMap::new()])),
+        }
+    }
+
+    fn enter(&self, kwargs: HashMap<String, isize>){
+        let mut stack = self.stack.borrow_mut();
+        stack.last_mut().unwrap().extend(kwargs.clone());
+
+        for (k,v) in kwargs.iter(){
+            stack.last_mut().unwrap().insert(k.clone(), *v);
+        }
+
+        stack.push(kwargs);
+    }
+
+    fn exit(&self){
+        let mut stack = self.stack.borrow_mut();
+        if let Some(undo_state) = stack.pop(){
+            for (k, v) in undo_state.iter(){
+                stack.last_mut().unwrap().insert(k.clone(), *v);
+            }
+        }
+    }
+}
+
+//automatic exit when dropped can be overriden
+impl <'a> Drop for Context {
+    fn drop(&mut self) {
+            let mut stack = self.stack.borrow_mut();
+            if let Some(undo_state) = stack.pop(){
+                for (k, v) in undo_state.iter(){
+                    stack.last_mut().unwrap().insert(k.clone(), *v);
+                }
+            }
+    }
+}
+//xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx Context Usage xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+// let context = Context::new();
+
+// // Example of using the context
+// {
+//     let mut stack = context.stack.lock().unwrap();
+//     stack.last_mut().unwrap().insert(String::from("example"), 42);
+// }
+
+// context.enter(HashMap::new()); // Enter the context with empty temporary state
+// context.enter(HashMap::from([("key1", 10), ("key2", 20)])); // Enter the context with new temporary state
+
+// // ... Do some work with the modified state ...
+
+// context.exit(); 
+
+#[derive(Debug)]
+pub struct ContextVar {
+    key: Arc<String>,
+    value: isize,
+}
+
+impl ContextVar {
+    pub fn new(key: &str, default_value: isize) -> ContextVar {
+        let cache_clone = Arc::clone(&CACHE_LRU);
+        let mut cache = cache_clone.lock().unwrap();
+
+        if let Some(result) = cache.get(&Arc::new(key.to_string())){
+            return ContextVar{
+                key: Arc::new(key.to_string()),
+                value: result.parse().unwrap_or(default_value),
+            };
+        }
+
+        let result= match getenv(key, default_value.to_string()){
+            Ok(value) => value.parse().unwrap_or(default_value),
+            Err(_) => default_value,
+        };
+
+        cache.put(Arc::new(key.to_string()), Arc::new(result.to_string()));
+
+        ContextVar{
+            key: Arc::new(key.to_string()),
+            value: result,
+        }
+    }
+}
+
+impl std::cmp::PartialEq for ContextVar{
+    fn eq(&self, other: &Self) -> bool {
+        self.value == other.value
+    }
+}
+
+impl std::cmp::PartialOrd for ContextVar{
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.value.cmp(&other.value))
+    }
+}
+
+pub struct Timing<'a> {
+    prefix: &'a str,
+    on_exit: Option<Box<dyn Fn(u128) -> String>>,
+    enabled: bool,
+    st: Option<Instant>,
+}
+
+impl<'a> Timing<'a> {
+    pub fn new(prefix: &'a str, on_exit: Option<Box<dyn Fn(u128) -> String>>, enabled: bool) -> Self {
+        Timing { prefix, on_exit, enabled, st: None }
+    }
+
+    pub fn enter(&mut self){
+        self.st = Some(Instant::now());
+    }
+
+    pub fn exit(&mut self){
+        if let Some(start_time) = self.st {
+            let elapsed_time = start_time.elapsed().as_nanos();
+            if self.enabled {
+                let message = format!("{}{:.2} ms", self.prefix, elapsed_time as f64 * 1e-6);
+                if let Some(ref on_exit_fn) = self.on_exit {
+                    print!("{}{}", message, on_exit_fn(elapsed_time));
+                } else {
+                    print!("{}", message);
+                }
+            }
+        }
+    }
+}
+
+// automatic when dropped can be overridden later
+impl<'a> Drop for Timing<'a> {
+    fn drop(&mut self) {
+        if let Some(start_time) = self.st {
+            let elapsed_time = start_time.elapsed().as_nanos();
+            if self.enabled {
+                let message = format!("{}{:.2} ms", self.prefix, elapsed_time as f64 * 1e-6);
+                if let Some(ref on_exit_fn) = self.on_exit {
+                    print!("{}{}", message, on_exit_fn(elapsed_time));
+                } else {
+                    print!("{}", message);
+                }
+            }
+        }
+    }
+}
+
+fn format_fcn(fcn: (u32, u32, u32)) -> String {
+    format!("{}:{}:{}", fcn.0, fcn.1, fcn.2)
+}
+
+pub fn db_connection() -> Result<String, String>{
+    {   
+        if Arc::clone(&DB_CONNECTION).lock().unwrap().as_ref().is_some(){
+            return Err("DB already running".to_string());
+        }
+    }
+ 
+    let cache_db = Arc::clone(&CACHEDB);
+    fs::create_dir_all(Path::new(cache_db.as_str()).parent().unwrap()).ok();
+    let mut connection = Connection::open(cache_db.as_str()).expect("Failed to connect to db");
+
+    if Arc::clone(&DEBUG).lock().unwrap().key.parse::<i32>().unwrap() >= 7 {
+        connection.trace(Some(|i: &str| print!("{}", i)));
+    }
+
+    // let db = Arc::clone(&DB_CONNECTION);
+    // let mut db_guard = db.lock().unwrap();
+    // *db_guard = Some(connection);
+
+    *(Arc::clone(&DB_CONNECTION).lock().unwrap()) = Some(connection);
+    
+    Ok("DB started".to_string())
+}
+
+// pub fn discache_get<T>(tabel: String, key: HashMap<String, String>, val: T) -> Option<serde_pickle>{
+//     if Arc::clone(&CACHELEVEL).parse::<isize>().unwrap() == 0{
+//         return None;
+//     }
+// }
+
+fn diskcache_get<T>(table: &str, key: &impl serde::Serialize) -> Option<T>
+where
+    T: serde::de::DeserializeOwned,
+{
+    if Arc::clone(&CACHELEVEL).parse().unwrap() == 0 {
+        return None;
+    }
+    let key_str = serde_pickle::to_vec(key, Default::default()).expect("Failed to serialize key");
+    let key_value: serde_pickle::Value =
+        serde_pickle::from_slice(&key_str, Default::default()).expect("Failed to deserialize key");
+
+    let conn = match db_connection() {
+        Ok(s) => *Arc::clone(&DB_CONNECTION).lock().unwrap(),
+        Err(s) => panic!("DB CONNECTION ERR"),
+    };
+    let mut stmt = conn?
+        .prepare(&format!(
+            "SELECT val FROM {}_{} WHERE {}",
+            table,
+            Arc::clone(&VERSION).as_ref(),
+            match &key_value {
+                serde_pickle::Value::Dict(dict) => dict
+                    .iter()
+                    .map(|(k, _)| format!("{}=?", k))
+                    .collect::<Vec<_>>()
+                    .join(" AND "),
+                _ => panic!("Key must be a dictionary"),
+            }
+        ))
+        .expect("Failed to prepare SQL statement");
+
+    let mut rows = stmt
+        .query(params!(
+            match &key_value {
+                serde_pickle::Value::Dict(dict) => dict.iter().map(|(_, v)| v),
+                _ => panic!("Key must be a dictionary"),
+            }
+        ))
+        .expect("Failed to execute SQL query");
+
+    if let Some(val) = rows
+        .next().unwrap()?
+        .map(|row| row.unwrap().get::<_, Vec<u8>>(0).map(|v| &v[..]))
+    {
+        return Some(serde_pickle::from_slice(val?, Default::default()).expect("Failed to deserialize value"));
+    }
+
+    None
 }

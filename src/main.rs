@@ -1,21 +1,23 @@
 mod rustgrad;
 use crate::rustgrad::helpers::DeepFlatten;
 use std::collections::HashMap;
+use std::path::Path;
 fn main() {
         // Create some example maps
-        let map1: HashMap<&str, i32> = [("a", 1), ("b", 2)].iter().cloned().collect();
-        let map2: HashMap<&str, i32> = [("e", 3), ("c", 4)].iter().cloned().collect();
-        let map3: HashMap<&str, i32> = [("d", 5)].iter().cloned().collect();
+        let cache_dir = "/your/cache/dir";  // Replace with your actual cache directory
 
-        // Merge the maps
-        let merged_map = rustgrad::helpers::merge_maps(vec![map1.clone(), map2.clone(), map3.clone()]);
-
-        // Check the expected result
-        let expected_result: HashMap<&str, i32> = [("a", 1), ("b", 3), ("c", 4), ("d", 5)]
-            .iter()
-            .cloned()
-            .collect();
-
-        assert_eq!(merged_map, expected_result);
-
+        let cache_path = Path::new(cache_dir)
+            .join("tinygrad")
+            .join("cache.db");
+    
+        let absolute_path = cache_path.canonicalize().expect("Failed to get absolute path");
+    
+        println!("Absolute Path: {:?}", absolute_path);
+        let mut map = std::collections::BTreeMap::new();
+        map.insert("x".to_string(), 1.0);
+        map.insert("y".to_string(), 2.0);
+    
+        let serialized = serde_pickle::to_vec(&map, Default::default()).unwrap();
+        let deserialized = serde_pickle::from_slice(&serialized, Default::default()).unwrap();
+    assert_eq!(map, deserialized);
 }
