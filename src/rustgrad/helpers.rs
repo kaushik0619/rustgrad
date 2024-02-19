@@ -1,4 +1,8 @@
+use erased_serde::Serialize;
 use num_traits::{ Num, One};
+use rusqlite::types::FromSql;
+use serde_json::{Map, Value};
+use std::any::Any;
 use std::borrow::Borrow;
 use std::cell::RefCell;
 use std::env::{temp_dir};
@@ -6,9 +10,10 @@ use std::iter::{ Product};
 use std::num::NonZeroUsize;
 use std::ops::Mul;
 use std::usize::MAX;
-use std::{env, vec};
+use std::{env, result, vec};
 use lazy_static::lazy_static;
 use std::collections::{HashSet, HashMap};
+use std::hash::Hasher;
 use colored::*;
 use regex::Regex;
 use std::iter::Flatten;
@@ -20,8 +25,15 @@ use std::error::Error;
 use std::fmt::{self};
 use std::time::{Instant};
 use dirs::home_dir;
-use rusqlite::{Connection, params};
+use rusqlite::{params, Connection, ToSql};
 use std::fs;
+use std::hash::Hash;
+use std::io::{self, Write};
+use std::fs::{File};
+use std::path::{PathBuf};
+use std::fmt::Debug;
+use std::time::Duration;
+use serde::{Deserialize};
 lazy_static! {
     static ref OSX: Arc<bool> = Arc::new(cfg!(target_os = "macos"));
     static ref CI: Arc<bool> = Arc::new(env::var("CI").is_ok());
@@ -58,6 +70,7 @@ lazy_static! {
 
     pub static ref VERSION:Arc<usize> = Arc::new(1);
     pub static ref DB_CONNECTION: Arc<Mutex<Option<Connection>>> = Arc::new(Mutex::new(None));
+    static ref _DB_TABLES: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
 }
 
 pub fn prod<T>(x: impl IntoIterator<Item = T>) -> T
@@ -593,52 +606,175 @@ pub fn db_connection() -> Result<String, String>{
 //     }
 // }
 
-fn diskcache_get<T>(table: &str, key: &impl serde::Serialize) -> Option<T>
-where
-    T: serde::de::DeserializeOwned,
-{
-    if Arc::clone(&CACHELEVEL).parse().unwrap() == 0 {
+// pub fn diskcache_get<T>(table: &str, key: Map<String, Value>) -> Option<Vec<u8>>{
+//     if Arc::clone(&CACHELEVEL).parse::<i32>().unwrap() == 0{
+//         return Option::None;
+//     }
+
+//     let connStatus = Arc::clone(&DB_CONNECTION);
+//     let result = match connStatus.lock().unwrap()
+//                                         .as_ref()?
+//                                         .execute(
+//                                             format!(
+//                                                 "SELECT val FROM {}_{} WHERE {}", 
+//                                                 table, 
+//                                                 Arc::clone(&VERSION),
+//                                                 key.keys()
+//                                                     .map(|k| format!("{}=?", k))
+//                                                     .collect::<Vec<String>>()
+//                                                     .join(" AND ")).as_str(), 
+//                                                     params![
+//                                                         key.values()
+//                                                             .map(
+//                                                                 |v| serde_json::to_vec(&v.to_string()).unwrap())
+//                                                                     .collect::<Vec<Vec<u8>>>()
+//                                                                     .concat()]){
+//                                                                         Ok(r) => return 
+//                                                                     };
+    
+
+//     return None;
+// }
+
+// pub fn diskcache_get(table: &str, key: Map<String, Value>) -> Option<Vec<u8>> {
+//     if Arc::clone(&CACHELEVEL).parse::<i32>().unwrap() == 0 {
+//         return None;
+//     }
+//     let mut temp = vec![];
+//     let conn_status = Arc::clone(&DB_CONNECTION);
+//     let mut conn = conn_status.lock().unwrap();
+//     let mut query = conn
+//         .as_mut()?
+//         .prepare(
+//             &format!(
+//                 "SELECT val FROM {}_{} WHERE {}",
+//                 table,
+//                 Arc::clone(&VERSION),
+//                 key.keys()
+//                     .map(|k| format!("{}=?", k))
+//                     .collect::<Vec<String>>()
+//                     .join(" AND ")
+//             ),
+//         )
+//         .unwrap();
+        
+//         let _ = query.query(params!(
+//             key.values()
+//                 .map(|v| serde_json::to_vec(&v.to_string()).unwrap())
+//                 .collect::<Vec<Vec<u8>>>()
+//                 .concat()
+//         ))
+//         .unwrap().map(|r| Ok(temp.push(r.get::<usize, Vec<u8>>(0)?)));
+    
+//     temp.into_iter().map(|v| serde_pickle::from_slice(&v, Default::default()).unwrap()).collect()
+
+// }
+
+pub fn diskcache_get(table: &str, key: Map<String, Value>) -> Option<Vec<u8>> {
+    if Arc::clone(&CACHELEVEL).parse::<i32>().unwrap() == 0 {
         return None;
     }
-    let key_str = serde_pickle::to_vec(key, Default::default()).expect("Failed to serialize key");
-    let key_value: serde_pickle::Value =
-        serde_pickle::from_slice(&key_str, Default::default()).expect("Failed to deserialize key");
 
-    let conn = match db_connection() {
-        Ok(s) => *Arc::clone(&DB_CONNECTION).lock().unwrap(),
-        Err(s) => panic!("DB CONNECTION ERR"),
-    };
-    let mut stmt = conn?
-        .prepare(&format!(
-            "SELECT val FROM {}_{} WHERE {}",
-            table,
-            Arc::clone(&VERSION).as_ref(),
-            match &key_value {
-                serde_pickle::Value::Dict(dict) => dict
-                    .iter()
-                    .map(|(k, _)| format!("{}=?", k))
-                    .collect::<Vec<_>>()
-                    .join(" AND "),
-                _ => panic!("Key must be a dictionary"),
-            }
-        ))
-        .expect("Failed to prepare SQL statement");
+    let mut temp = Vec::new();
+    let conn_status = Arc::clone(&DB_CONNECTION);
+    let mut conn = conn_status.lock().unwrap();
 
-    let mut rows = stmt
+    let mut query = conn
+        .as_mut()?
+        .prepare(
+            &format!(
+                "SELECT val FROM {}_{} WHERE {}",
+                table,
+                Arc::clone(&VERSION),
+                key.keys()
+                    .map(|k| format!("{}=?1", k))
+                    .collect::<Vec<String>>()
+                    .join(" AND ")
+            ),
+        )
+        .unwrap();
+
+    let _ = query
         .query(params!(
-            match &key_value {
-                serde_pickle::Value::Dict(dict) => dict.iter().map(|(_, v)| v),
-                _ => panic!("Key must be a dictionary"),
-            }
+            key.values()
+                .map(|v| String::from_utf8_lossy(serde_json::to_vec(&v.to_string()).unwrap().as_slice()).to_string())
+                .collect::<Vec<String>>()
+                .concat()
         ))
-        .expect("Failed to execute SQL query");
+        .unwrap()
+        .map(|r| Ok(temp.push(r.get::<usize, Vec<u8>>(0)?)));
 
-    if let Some(val) = rows
-        .next().unwrap()?
-        .map(|row| row.unwrap().get::<_, Vec<u8>>(0).map(|v| &v[..]))
-    {
-        return Some(serde_pickle::from_slice(val?, Default::default()).expect("Failed to deserialize value"));
+    temp.into_iter().map(|v| serde_pickle::from_slice(&v, Default::default()).unwrap()).collect()
+}
+
+pub fn diskcache_put(table: &str,  key: Map<String, Value>, val: Value)->Value{
+    if Arc::clone(&CACHELEVEL).parse::<isize>().unwrap() == 0{
+        return val;
     }
 
-    None
+    let conn_status = Arc::clone(&DB_CONNECTION);
+    let mut conn = conn_status.lock().unwrap();
+
+    let tables = Arc::clone(&_DB_TABLES);
+    let mut t = tables.lock().unwrap();
+
+    if t.contains(&table.to_string()){
+
+        let _ = conn.as_mut().unwrap()
+                                                        .prepare(
+                                                            format!("CREATE TABLE IF NOT EXISTS {}_{} (?1, val blob, PRIMARY KEY (?2))", 
+                                                            table, 
+                                                            Arc::clone(&VERSION)).as_str()
+                                                        ).unwrap().execute(params![
+                                                            key.keys().map(|k| format!("{} TYPES text", k.to_string())).collect::<Vec<String>>().join(", "), 
+                                                            key.keys().map(|k| k.to_string()).collect::<Vec<_>>().join(", ")
+                                                        ]).unwrap();
+        t.push(table.to_string());
+        
+    }
+    let _ = conn.as_mut().unwrap().prepare(
+        format!("REPLACE INTO {}_{} ({}) VALUES (?2)",
+                    table,
+                    Arc::clone(&VERSION),
+                    vec!["?"; key.keys().len()].join(", ")
+                ).as_str()
+            ).unwrap().execute(params![
+                key.values()
+                .map(|v| String::from_utf8_lossy(serde_json::to_vec(&v.to_string()).unwrap().as_slice()).to_string())
+                .collect::<Vec<String>>()
+                .concat(),
+                serde_json::from_value::<Vec<_>>(val.clone()).unwrap()
+            ]).unwrap();
+    let _  = conn.take().unwrap().close().unwrap();
+    return val;
+}
+
+
+fn diskcache_wrapper<F, R>(func: F) -> impl Fn(&[Box<dyn erased_serde::Serialize>], &HashMap<String, Box<dyn erased_serde::Serialize>>) -> Vec<u8>
+where
+    F: Fn(&[Box<dyn erased_serde::Serialize>], &HashMap<String, Box<dyn erased_serde::Serialize>>) -> R,
+    R: erased_serde::Serialize + serde::Serialize,
+{
+    move |args: &[Box<dyn erased_serde::Serialize>], kwargs: &HashMap<String, Box<dyn erased_serde::Serialize>>| -> Vec<u8> {
+        let table = format!("cache_{}", std::any::type_name::<F>());
+        let key = hash_key(args, kwargs);
+
+        if let Some(ret) = diskcache_get(&table, serde_json::from_str::<Map<String, Value>>(&key).unwrap()) {
+            return ret;
+        }
+
+        let result = func(args, kwargs);
+        let serialized_result = serde_json::to_value(&result).unwrap();
+
+        diskcache_put(&table, serde_json::from_str::<Map<String, Value>>(&key).unwrap(), serialized_result.clone());
+
+        serde_json::to_vec(&result).unwrap()
+    }
+}
+
+fn hash_key(args: &[Box<dyn erased_serde::Serialize>], kwargs: &HashMap<String, Box<dyn erased_serde::Serialize>>) -> String {
+    let serialized_args = serde_json::to_vec(&(args.iter().map(|a| a.as_ref()).collect::<Vec<_>>(), kwargs)).unwrap();
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    hasher.write(&serialized_args);
+    format!("{:x}", hasher.finish())
 }
