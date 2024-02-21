@@ -34,6 +34,7 @@ use std::path::{PathBuf};
 use std::fmt::Debug;
 use std::time::Duration;
 use serde::{Deserialize};
+use cached::proc_macro::cached;
 lazy_static! {
     static ref OSX: Arc<bool> = Arc::new(cfg!(target_os = "macos"));
     static ref CI: Arc<bool> = Arc::new(env::var("CI").is_ok());
@@ -48,21 +49,21 @@ lazy_static! {
     pub static ref GRAPH: Arc<Mutex<ContextVar>> = Arc::new(Mutex::new(ContextVar::new("GRAPH", 0)));
 
     
-    pub static ref GRAPHPATH: Arc<String> =  match getenv("GRAPHPATH", "/temp/net".to_string()){
+    pub static ref GRAPHPATH: Arc<String> =  match getenv("GRAPHPATH".to_string(), "/temp/net".to_string()){
         Ok(s) => Arc::new(s),
         Err(s) => Arc::new(s)
     };
 
 
-    pub static ref CACHE_DIR: Arc<String> = match getenv("XDG_CACHE_HOME", home_dir().map_or("".to_string(), |home| home.join(if *Arc::clone(&OSX) { "Library/Caches" } else { ".cache" }).to_string_lossy().into_owned())){
+    pub static ref CACHE_DIR: Arc<String> = match getenv("XDG_CACHE_HOME".to_string(), home_dir().map_or("".to_string(), |home| home.join(if *Arc::clone(&OSX) { "Library/Caches" } else { ".cache" }).to_string_lossy().into_owned())){
         Ok(s) => Arc::new(s),
         Err(s) => Arc::new(s)
     };
-    pub static ref CACHEDB: Arc<String> = match getenv("CACHEDB", Path::new(Arc::clone(&CACHE_DIR).as_ref()).join("rustgrad").join("cache_db").canonicalize().expect("Failed to get abs path").to_string_lossy().to_owned().to_string()){
+    pub static ref CACHEDB: Arc<String> = match getenv("CACHEDB".to_string(), Path::new(Arc::clone(&CACHE_DIR).as_ref()).join("rustgrad").join("cache_db").canonicalize().expect("Failed to get abs path").to_string_lossy().to_owned().to_string()){
         Ok(s) => Arc::new(s),
         Err(s) => Arc::new(s)
     };
-    pub static ref CACHELEVEL: Arc<String> = match getenv("CACHELEVEL", 2.to_string()){
+    pub static ref CACHELEVEL: Arc<String> = match getenv("CACHELEVEL".to_string(), 2.to_string()){
         Ok(s) => Arc::new(s),
         Err(s) => Arc::new(s)
     };
@@ -345,15 +346,16 @@ pub fn get_contraction(old_shape: &[usize], new_shape: &[usize]) -> Option<Vec<V
     Some(contraction)
 }
 
-pub fn to_function_name(s: &str) -> String {
-    let cache_clone = Arc::clone(&CACHE_LRU);
-    let mut cache = cache_clone.lock().unwrap();
+#[cached]
+pub fn to_function_name(s: String) -> String {
+    // let cache_clone = Arc::clone(&CACHE_LRU);
+    // let mut cache = cache_clone.lock().unwrap();
 
-    if let Some(result) = cache.get(&Arc::new(s.to_string())) {
-        return Arc::clone(result).as_str().to_string();
-    }
+    // if let Some(result) = cache.get(&Arc::new(s.to_string())) {
+    //     return Arc::clone(result).as_str().to_string();
+    // }
 
-    let result: String = ansistrip(s)
+    let result: String = ansistrip(&s)
         .chars()
         .map(|c| {
             if c.is_ascii_alphanumeric() || c == '_' {
@@ -364,27 +366,28 @@ pub fn to_function_name(s: &str) -> String {
         })
         .collect();
 
-    cache.put(Arc::new(s.to_string()), Arc::new(result.clone()));
+    // cache.put(Arc::new(s.to_string()), Arc::new(result.clone()));
 
     result
 }
 
-pub fn getenv(key: &str, default: String) -> Result<String, String> {
-    let cache_clone = Arc::clone(&CACHE_LRU);
-    let mut cache = cache_clone.lock().unwrap();
+#[cached]
+pub fn getenv(k: String, default: String) -> Result<String, String> {
+    // let cache_clone = Arc::clone(&CACHE_LRU);
+    // let mut cache = cache_clone.lock().unwrap();
 
-    if let Some(result) = cache.get(&Arc::new(key.to_string())) {
-        return Ok(Arc::clone(result).as_str().to_string());
-    }
+    // if let Some(result) = cache.get(&Arc::new(key.to_string())) {
+    //     return Ok(Arc::clone(result).as_str().to_string());
+    // }
 
-    match env::var(key) {
+    match env::var(k) {
         Ok(value) => {
             let result = value.parse().unwrap_or_else(|_| default.clone());
-            cache.put(Arc::new(key.to_string()), Arc::new(result.clone()));
+            // cache.put(Arc::new(key.to_string()), Arc::new(result.clone()));
             Ok(result)
         }
         Err(_) => {
-            cache.put(Arc::new(key.to_string()), Arc::new(default.clone()));
+            // cache.put(Arc::new(key.to_string()), Arc::new(default.clone()));
             Err(default)
         }
     }
@@ -498,7 +501,7 @@ impl ContextVar {
             };
         }
 
-        let result= match getenv(key, default_value.to_string()){
+        let result= match getenv(key.to_string(), default_value.to_string()){
             Ok(value) => value.parse().unwrap_or(default_value),
             Err(_) => default_value,
         };
@@ -670,6 +673,7 @@ pub fn db_connection() -> Result<String, String>{
 
 // }
 
+// overly complicated... TODO: simplify...
 pub fn diskcache_get(table: &str, key: Map<String, Value>) -> Option<Vec<u8>> {
     if Arc::clone(&CACHELEVEL).parse::<i32>().unwrap() == 0 {
         return None;
