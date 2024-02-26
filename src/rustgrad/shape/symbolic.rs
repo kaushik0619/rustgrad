@@ -74,32 +74,13 @@ pub trait NodeMethods<T>: Debug
 
         let mut nodes = vec![];
         nodes.into_iter().map(|n|{
-            match n{
-                SymTypes::MulNode(x) =>{
-                    if x.max.is_some() || x.min.is_some(){
-                        nodes.push(SymTypes::MulNode(x));
-                    }
-                },
-                SymTypes::NumNode(x) => {
-                    if x.max.is_some() || x.min.is_some(){
-                        nodes.push(SymTypes::NumNode(x))
-                    }
-                },
-                SymTypes::Variable(x)=>{
-                    if x.max.is_some() || x.min.is_some(){
-                        nodes.push(SymTypes::Variable(x));
-                    }
-                },
-                SymTypes::SumNode(x) => {
-                    if x.max.is_some() || x.min.is_some(){
-                        nodes.push(SymTypes::SumNode(x));
-                    }
-                }
+            if n.unwrap().max.is_some() || n.unwrap().min.is_some(){
+                nodes.push(SymTypes::SumNode(n.unwrap()));
             }
         });
 
         if nodes.is_empty(){
-            return SymTypes::NumNode(NumNode{b: 0, min: None, max: None});
+            return SymTypes::NumNode(NumNode::new(0));
         } else if nodes.len() == 1{
            return nodes[0];
         } else{
@@ -158,7 +139,7 @@ pub trait NodeMethods<T>: Debug
                 }
             });
             if num_node_sum != 0{
-                new_nodes.push(SymTypes::NumNode(NumNode { b: num_node_sum, min: Some(num_node_sum), max: Some(num_node_sum) }));
+                new_nodes.push(SymTypes::NumNode(NumNode::new(num_node_sum)));
             }
 
             if new_nodes.len() > 1 {NumNode::create_node(SymTypes::SumNode(SumNode { nodes: new_nodes, flat_components: Box::new(vec![]), max: None, min: None }))}
@@ -166,7 +147,7 @@ pub trait NodeMethods<T>: Debug
                 if new_nodes.len() == 1{
                     new_nodes[0]
                 } else{
-                    SymTypes::NumNode(NumNode{b: 0, min: Some(0), max: Some(0)})
+                    SymTypes::NumNode(NumNode::new(0))
                 }
             }
 
@@ -177,11 +158,11 @@ pub trait NodeMethods<T>: Debug
 
     fn ands(nodes: Option<Vec<SymTypes<T>>>) -> SymTypes<T> {
         match nodes {
-            None => SymTypes::NumNode(NumNode { b: 1, min: Some(1), max: Some(1) }),
+            None => SymTypes::NumNode(NumNode::new(1)),
             Some(n) => match n.as_slice() {
                 [single_node] => single_node.clone(),
-                [] => SymTypes::NumNode(NumNode { b: 0, min: None, max: None }),
-                _ => NumNode::create_node(SymTypes::AndNode(AndNode { nodes })),
+                [] => SymTypes::NumNode(NumNode::new(0)),
+                _ => NumNode::create_node(SymTypes::AndNode(AndNode::new(nodes))),
             },
         }
     }
@@ -201,7 +182,7 @@ impl Variable{
         if min >= 0 && min <= max{
             panic!("invalid variable {:?} {:?} {:?}", expr, min, max);
         } else if min == max {
-            SymTypes::NumNode(NumNode { b: min, min: Some(min), max: Some(min) })
+            SymTypes::NumNode(NumNode::new(min))
         } else {
             cls.clone()
         }
@@ -237,7 +218,7 @@ impl<T: Debug + Eq + Display + Sync + Send + Hash + Clone + NodeMethods<T>> Node
         }
     }
 
-    fn render(&self, ops: Option<Box<dyn Fn(Box<dyn Any>) -> (Box<dyn Any>)>>, ctx: Option<&str>) -> String {
+    fn render(&self, ops: Option<Box<dyn Fn(Box<dyn Any>) -> Box<dyn Any>>>, ctx: Option<&str>) -> String {
         match ops {
             Some(o) => {
                 assert!(self.min != self.max);
@@ -290,7 +271,10 @@ pub struct NumNode {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Hash)]
-pub struct MulNode<T: Send + Sync + Debug + Eq + Hash + Display + Clone + NodeMethods<T>>{
+pub struct MulNode<T>
+    where
+    T: Send + Sync + Debug + Eq + Hash + Display + Clone + NodeMethods<T>,
+{
     a: Box<SymTypes<T>>,
     b: (Option<isize>, Option<Box<SymTypes<T>>>),
     min: Option<isize>,
@@ -306,49 +290,47 @@ pub enum SymTypes<T>
     NumNode(NumNode),
     MulNode(MulNode<T>),
     SumNode(SumNode<T>),
+    AndNode(AndNode<T>),
+    DivNode(DivNode<T>),
+    LtNode(LtNode<T>)
 }
 
+impl <T : Send + Sync + Debug + Eq + Hash + Display + Clone + NodeMethods<T>>SymTypes<T>{
+    fn unwrap(self) -> T{
+        match self{
+            Self::AndNode(n) | Self::DivNode(n) | Self::LtNode(n) | Self::MulNode(n) | Self::NumNode(n) | Self::SumNode(n) | Self::Variable(n) => {
+                n
+            }
+        }
+    }
+}
 // impl <T: Sync + Send + Debug + Display + Eq + Hash + Hash + NodeMethods<T>>NodeMethods<T> for MulNode<T>{
     
 // }
 pub trait RedNodeMethods<T: Sync + Send + Debug + Eq + Hash + Display + Clone + NodeMethods<T>>: NodeMethods<T>{
-    fn new(&self, nodes: Vec<Self>) -> Self where Self: Sized;
+    fn new(nodes: Vec<Self>) -> Self where Self: Sized;
 
     fn get_bounds(&self) -> (isize, isize);
 
     fn vars(&self)->Vec<Variable>;
 
 }
-
 #[derive(Debug, Eq, PartialEq, Hash, Clone)]
-struct SumNode<T>
+struct SumNode<F>
     where
-        T: Sync + Send + Debug + Eq + Hash + Display + Clone + NodeMethods<T>
+        F: Sync + Send + Debug + Eq + Hash + Display + Clone + NodeMethods<F>
 {
-    nodes: Vec<SymTypes<T>>,
-    flat_components: Box<Vec<SymTypes<T>>>,
+    nodes: Vec<SymTypes<F>>,
+    flat_components: Box<Vec<SymTypes<F>>>,
     max: Option<isize>,
     min: Option<isize>
 }
 impl <T: Sync + Send + Debug + Display + Eq + Hash + Clone + NodeMethods<T>> NodeMethods<T> for SumNode<T>{
-    fn render(&self, ops: Option<Box<dyn Fn(Box<dyn Any>) -> (Box<dyn Any>)>>, ctx: Option<&str>) -> String{
+    fn render(&self, ops: Option<Box<dyn Fn(Box<dyn Any>) -> Box<dyn Any>>>, ctx: Option<&str>) -> String{
         match ops{
             Some(o) => {
                 let mut prod = self.nodes.into_iter().map(|x| {
-                    match x {
-                        SymTypes::Variable(n) => {
-                            n.render(Some(Box::new(o)), ctx)
-                        },
-                        SymTypes::NumNode(n) => {
-                            n.render(Some(Box::new(o)), ctx)
-                        },
-                        SymTypes::MulNode(n) => {
-                            n.render(Some(Box::new(o)), ctx)
-                        },
-                        SymTypes::SumNode(n) => {
-                            n.render(Some(Box::new(o)), ctx)
-                        },
-                    }
+                    x.unwrap().render(Some(Box::new(o)), ctx)
                 }).collect::<Vec<_>>();
 
                 prod.sort();
@@ -358,16 +340,7 @@ impl <T: Sync + Send + Debug + Display + Eq + Hash + Clone + NodeMethods<T>> Nod
             None => {
                 let mut prod = self.nodes.into_iter().map(|x| {
                     match x {
-                        SymTypes::Variable(n) => {
-                            n.render(None, ctx)
-                        },
-                        SymTypes::NumNode(n) => {
-                            n.render(None, ctx)
-                        },
-                        SymTypes::MulNode(n) => {
-                            n.render(None, ctx)
-                        },
-                        SymTypes::SumNode(n) => {
+                        SymTypes::Variable(n) | SymTypes::DivNode(n) | SymTypes::NumNode(n) | SymTypes::MulNode(n) | SymTypes::SumNode(n) | SymTypes::AndNode(n) | SymTypes::LtNode(n)=> {
                             n.render(None, ctx)
                         },
                     }
@@ -383,18 +356,9 @@ impl <T: Sync + Send + Debug + Display + Eq + Hash + Clone + NodeMethods<T>> Nod
         let mut vec = vec![];
         self.nodes.iter().for_each(|n| {
             match n{
-                SymTypes::MulNode(v) => {
+                SymTypes::MulNode(v) | SymTypes::SumNode(v)| SymTypes::Variable(v) | SymTypes::NumNode(v) | SymTypes::LtNode(v) | SymTypes::DivNode(v) | SymTypes::AndNode(v)=> {
                     vec.push(v.substitute(var_vals));
-                },
-                SymTypes::SumNode(v) => {
-                    vec.push(v.substitute(var_vals));
-                },
-                SymTypes::Variable(v) => {
-                    vec.push(v.substitute(var_vals));
-                },
-                SymTypes::NumNode(v) => {
-                    vec.push(v.substitute(var_vals));
-                },
+                }
             }
         });
         SumNode::<T>::sum(vec)
@@ -419,16 +383,10 @@ impl <T>SumNode<T>
         let mut result = vec![];
         self.nodes.into_iter().map(|n|{
            match n {
-            SymTypes::MulNode(v) => {
-                result.push(n);
-            },
             SymTypes::SumNode(v) => {
                 v.flat_components.into_iter().map(|n| result.push(n));
             },
-            SymTypes::Variable(v) => {
-                result.push(n);
-            },
-            SymTypes::NumNode(v) => {
+            SymTypes::MulNode(v) | SymTypes::Variable(v) | SymTypes::NumNode(v) | SymTypes::AndNode(v) | SymTypes::LtNode(v) | SymTypes::DivNode(v)=> {
                 result.push(n);
             },
            };
@@ -438,7 +396,7 @@ impl <T>SumNode<T>
 }
 
 impl <T: Sync + Send + Debug + Display + Eq + Hash + Clone + NodeMethods<T>>NodeMethods<T> for NumNode{
-    fn render(&self, ops: Option<Box<dyn Fn(Box<dyn Any>) -> (Box<dyn Any>)>>, ctx: Option<&str>) -> String {
+    fn render(&self, ops: Option<Box<dyn Fn(Box<dyn Any>) -> Box<dyn Any>>>, ctx: Option<&str>) -> String {
         ops
             .and_then(|_| ctx.map(|c| if c == "REPR" { format!("NumNode({})", self.b) } else { format!("{}", self.b) }))
             .unwrap_or_else(|| format!("{}", self.b))
@@ -467,46 +425,16 @@ impl NumNode
         where T: Sync + Send + Debug + Display + Eq + Hash + Clone + NodeMethods<T>
     {
         match ret{
-            SymTypes::MulNode(n) => {
+            SymTypes::MulNode(n) | SymTypes::NumNode(n) | SymTypes::SumNode(n) | SymTypes::Variable(n) | SymTypes::AndNode(n) | SymTypes::LtNode(n) | SymTypes::DivNode(n)=> {
                 if n.min <= n.max{
                     panic!("min greater than max! {:?} {:?} when creating Mulnode {:?}", n.min, n.max, ret);
                 }
                 if n.min == n.max {
-                    return SymTypes::NumNode(NumNode { b: n.min.unwrap(), min: n.min, max: n.min })
+                    SymTypes::NumNode(NumNode { b: n.min.unwrap(), min: n.min, max: n.min })
                 } else{
-                    return ret
+                    ret
                 }
-            },
-            SymTypes::NumNode(n) => {
-                if n.min <= n.max{
-                    panic!("min greater than max! {:?} {:?} when creating Mulnode {:?}", n.min, n.max, ret);
-                }
-                if n.min == n.max {
-                    return SymTypes::NumNode(NumNode { b: n.min.unwrap(), min: n.min, max: n.min })
-                } else{
-                    return ret
-                }
-            },
-            SymTypes::SumNode(n) => {
-                if n.min <= n.max{
-                    panic!("min greater than max! {:?} {:?} when creating Mulnode {:?}", n.min, n.max, ret);
-                }
-                if n.min == n.max {
-                    return SymTypes::NumNode(NumNode { b: n.min.unwrap(), min: n.min, max: n.min })
-                } else{
-                    return ret
-                }
-            },
-            SymTypes::Variable(n) => {
-                if n.min <= n.max{
-                    panic!("min greater than max! {:?} {:?} when creating Mulnode {:?}", n.min, n.max, ret);
-                }
-                if n.min == n.max {
-                    return SymTypes::NumNode(NumNode { b: n.min.unwrap(), min: n.min, max: n.min })
-                } else{
-                    return ret
-                }
-            },
+            }
         }
     }
 }
@@ -538,4 +466,126 @@ trait OpNodeMethods <T: Sync + Send + Debug + Display + Eq + Hash + Clone + Node
     }
 
     fn get_bounds(&self) -> (isize, isize);
+}
+
+#[derive(Debug)]
+struct LtNode<T>
+    where
+    T: Send + Sync + Debug + Eq + Hash + Display + Clone + NodeMethods<T>
+{
+    a: Box<SymTypes<T>>,
+    b: (Option<isize>, Option<Box<SymTypes<T>>>),
+}
+
+impl <T: Send + Sync + Debug + Eq + Hash + Display + Clone + NodeMethods<T>>OpNodeMethods<T> for LtNode<T>{
+    fn get_bounds(&self) -> (isize, isize) {
+        if let (Some(i), None) = (&self.b.0, &self.b.1) {
+            if *self.a.max < *i {
+                (1, 1)
+            } else if self.a.min >= *i {
+                (0, 0)
+            } else {
+                (0, 1)
+            }
+        } else if let (None, Some(n)) = (&self.b.0, &self.b.1) {
+            if self.a == **n{
+                (0, 0)
+            }
+            if self.a.max < **n.min {
+                (1, 1)
+            } else if self.a.min >= **n.max {
+                (0, 0)
+            } else {
+                (0, 1)
+            }
+        } else {
+            (0, 0)
+        }
+    }
+    
+    fn new(a: T, b:(Option<T>, Option<isize>))-> Self {
+        LtNode{
+            a,
+            b
+        }
+    }
+}
+impl <T: Send + Sync + Debug + Eq + Hash + Display + Clone + NodeMethods<T>>NodeMethods<T> for LtNode<T>{
+    fn substitute(&self, var_vals: &HashMap<Variable, &SymTypes<T>>) -> SymTypes<T>{
+        if let(Some(i), None) = self.b{
+            *self.a.substitute(var_vals) < i
+        }  else if let (None, Some(n)) = self.b {
+            *self.a.substitute(var_vals) < *n.substitute(var_vals)
+        }
+    }
+}
+
+struct DivNode<T: Send + Sync + Debug + Eq + Hash + Display + Clone + NodeMethods<T>>{
+    a: Box<SymTypes<T>>,
+    b: (Option<isize>, Option<Box<SymTypes<T>>>),
+}
+
+impl <T: Send + Sync + Debug + Eq + Hash + Display + Clone + NodeMethods<T>>OpNodeMethods<T> for DivNode<T>{
+    fn new(a: T, b:(Option<T>, Option<isize>))-> Self {
+        DivNode{
+            a,
+            b
+        }
+    }
+    fn get_bounds(&self) -> (isize, isize) {
+        if self.b.1.is_some() && self.b.0.is_none() && self.a.min >= 0 {
+            panic!("ERROR while getting bounds");
+        }
+        
+        ((self.a.min / self.b.0.unwrap()).floor(), (self.a.max / self.b.0.unwrap()).floor())
+    }
+}
+
+impl <T: Send + Sync + Debug + Eq + Hash + Display + Clone + NodeMethods<T>>NodeMethods<T> for DivNode<T>{
+    fn substitute(&self, var_vals: &HashMap<Variable, &SymTypes<T>>) -> SymTypes<T> {
+        match self.b {
+            (Some(i), Some(n)) => panic!("Can't have an int and a node"),
+            (Some(i), None) | (None, Some(i)) => (self.a.substitute(var_vals) / i).floor(),
+            _ => panic!("None types given"),
+        }
+    }
+}
+
+#[derive(Debug)]
+struct AndNode<T>
+    where
+        T: Sync + Send + Debug + Eq + Hash + Display + Clone + NodeMethods<T>
+{
+    nodes: Vec<SymTypes<T>>,
+    max: Option<isize>,
+    min: Option<isize>
+}
+
+impl <T: Send + Sync + Debug + Eq + Hash + Display + Clone + NodeMethods<T>>RedNodeMethods<T> for AndNode<T>{
+    fn new(&self, nodes: Vec<Self>) -> Self where Self: Sized {
+        let (min, max) = self.get_bounds();
+        AndNode{
+            nodes,
+            min: Some(min),
+            max: Some(max)
+        }
+    }
+    fn get_bounds(&self) -> (isize, isize) {
+        (self.nodes.iter().map(|x| x.min).min(), self.nodes.iter().map(|x| x.max).max())
+    }
+}
+impl <T: Send + Sync + Debug + Eq + Hash + Display + Clone + NodeMethods<T>> NodeMethods<T> for AndNode<T>{
+    fn substitute(&self, var_vals: &HashMap<Variable, &SymTypes<T>>) -> SymTypes<T> {
+        let mut subed = vec![];
+
+        for node in &self.nodes{
+            if let Some(sub) = node.substitute(var_vals){
+                subed.push(sub);
+            } else {
+                return NumNode::new(0);
+            }
+        }
+
+        NodeMethods::ands(Some(subed))
+    }
 }
