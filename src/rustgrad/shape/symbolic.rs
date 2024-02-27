@@ -1,591 +1,852 @@
-use std::{
-    any::{Any, TypeId}, clone, cmp, collections::HashMap, fmt::{format, Debug, Display}, hash::Hash, iter::Map, ops::{Add, Mul, Neg, Rem, Sub}, sync::Arc
-};
-use cached::proc_macro::{cached, io_cached};
-use num_traits::Num;
+use core::fmt;
+use std::{any::Any, collections::{hash_map::DefaultHasher, HashMap}, fmt::write, hash::{Hash, Hasher}, ops::{Add, Mul, Neg}, rc::Rc};
 
-trait RMul<T: Num>{
-    fn rmul(&self, b:T) -> Self
-        where
-            Self: Sized + Mul,
-            for<'a>&'a Self: Mul<T, Output = Self>
-    {
-        self*b
-    }
+use num_traits::{AsPrimitive, ToPrimitive};
+use serde_json::Map;
+
+trait NodeMethods {
+    //maybe could also use dyn Any return type
+    fn render(&self, ops: &Option<Rc<dyn Any>>, ctx: &Option<&str>) -> &str;
+
+    fn vars(&self) -> Vec<&NodeTypes>;
+
+    fn substitute(&self, var_vals: HashMap<NodeTypes, NodeTypes>) -> &NodeTypes;
+
+    fn unbind(&self) -> (&NodeTypes, Option<f64>);
+
+    //to be cached
+    fn key(&self) -> &str;
+
+    //to be cached
+    fn hash(&self) -> u64;
+
+    fn sum(nodes: Vec<NodeTypes>) -> NodeTypes;
+
+    fn ands(nodes: &Vec<NodeTypes>) -> NodeTypes;
 }
 
-trait RSub<T:Num>
-    where
-        Self: Sized
-
-{
-    fn rsub(&self, b:T) -> Self
-        where
-        Self: Sized+Add + Neg<Output = Self> + Add<T, Output = Self>,
-        for<'a>&'a Self: Neg<Output = Self> + Add<T, Output = Self>
-    {
-        -self+b
-    }
+trait OpNodeMethods: NodeMethods {
+    fn get_bounds(&self) -> (f64, f64);
 }
 
-trait RAdd<T:Num>
-    where
-        Self: Sized
-{
-    fn radd(&self, b:T) -> Self
-        where
-            for <'a>&'a Self: Add<T, Output = Self>
-    {
-        self+b
-    }
+trait RedNodeMethods: NodeMethods {
+
+    fn get_bounds(&self) -> (f64, f64);
 }
-
-trait RFloorDiv<T:Num>{
-    fn rfloordiv(&self, b:T) -> NumNode;
-}
-
-trait RMod<T:Num>{
-    fn rmod(&self, b:T) -> NumNode;
-}
-
-// ToString + Hash + PartialEq + Neg + Add + Sized + Sub + PartialOrd + RAdd<F> +RSub<F> +RMul<F> + RFloorDiv<F> + RMod<F> + Mul + Rem
-pub trait NodeMethods<T>: Debug
-    where
-    T: Debug + Send + Sync + NodeMethods<T> + Eq + Hash + Display + Clone
-{
-    fn render(&self, ops: Option<Box<dyn Fn(Box<dyn Any>) -> (Box<dyn Any>)>>, ctx: Option<&str>) -> String;
-    fn vars(&self) -> Vec<Variable> {
-        Vec::new()
-    }
-
-    fn substitute(&self, var_vals: &HashMap<Variable, &SymTypes<T>>) -> SymTypes<T>;
-    fn unbind(&self) -> (SymTypes<T>, Option<isize>);
-    // {
-    //     let vars =  self.vars::<T>();
-    //     let map = vars.iter().map(|v| (v.clone(), <SymTypes<T> as NodeMethods>::unbind::<T>(&SymTypes::Variable(v.clone())))).collect();
-    //     (self.substitute(&map), None)
-    // }
-
-    fn key <G: Fn(Box<dyn Any>)>(&self) -> String {
-        self.render(None, Some("DEBUG"))
-    }
-
-    fn sum(nodes: Vec<SymTypes<T>>)-> SymTypes<T>{
-
-        let mut nodes = vec![];
-        nodes.into_iter().map(|n|{
-            if n.unwrap().max.is_some() || n.unwrap().min.is_some(){
-                nodes.push(SymTypes::SumNode(n.unwrap()));
-            }
-        });
-
-        if nodes.is_empty(){
-            return SymTypes::NumNode(NumNode::new(0));
-        } else if nodes.len() == 1{
-           return nodes[0];
-        } else{
-            let mut mul_groups: HashMap<SymTypes<T>, (Option<isize>, Option<Box<SymTypes<T>>>)> = HashMap::new();
-
-            let mut num_node_sum = 0;
-            let sumnode = SumNode{
-                nodes: nodes,
-                flat_components: Box::new(nodes),
-                max: None,
-                min: None,
-            };
-
-            for node in *sumnode.flat_components{
-                match node{
-                    SymTypes::NumNode(n) => {
-                        num_node_sum += n.b;
-                    },
-                    SymTypes::MulNode(n) => {
-                        mul_groups
-                        .entry(*n.a)
-                        .and_modify(|v| *v + n.b)
-                        .or_insert(n.b);
-                    },
-                    _ => {
-                        mul_groups.entry(node).and_modify(|(v_int, v_node)|{
-                            (v_int.map(|x| x+1).into(), v_node.map(|x| *x + 1));
-                        }).or_insert((Some(1), None));
-                    }
-                }
-            }
-            let new_nodes = vec![];
-            mul_groups.iter().for_each(|(k, (v_int, v_node))|{
-                match v_int{
-                    Some(val) =>{
-                        if *val != 0 && *val != 1 {
-                            new_nodes.push(SymTypes::MulNode(MulNode { a: Box::new(*k), b: (*v_int, *v_node), min: None, max: None }));
-                        } else{
-                            new_nodes.push(*k);
-                        }
-                    },
-                    None => {
-                        match v_node{
-                            Some(val) => {
-                                if **val != 0 && **val != 1{
-                                    new_nodes.push(SymTypes::MulNode(MulNode { a: Box::new(*k), b: (*v_int, *v_node), min: None, max: None }));
-                                } else {
-                                    new_nodes.push(*k);
-                                }
-                            },
-                            None => {
-                                new_nodes.push(*k);
-                            }
-                        }
-                    },
-                }
-            });
-            if num_node_sum != 0{
-                new_nodes.push(SymTypes::NumNode(NumNode::new(num_node_sum)));
-            }
-
-            if new_nodes.len() > 1 {NumNode::create_node(SymTypes::SumNode(SumNode { nodes: new_nodes, flat_components: Box::new(vec![]), max: None, min: None }))}
-            else{
-                if new_nodes.len() == 1{
-                    new_nodes[0]
-                } else{
-                    SymTypes::NumNode(NumNode::new(0))
-                }
-            }
-
-            
-        }
-
-    }
-
-    fn ands(nodes: Option<Vec<SymTypes<T>>>) -> SymTypes<T> {
-        match nodes {
-            None => SymTypes::NumNode(NumNode::new(1)),
-            Some(n) => match n.as_slice() {
-                [single_node] => single_node.clone(),
-                [] => SymTypes::NumNode(NumNode::new(0)),
-                _ => NumNode::create_node(SymTypes::AndNode(AndNode::new(nodes))),
-            },
-        }
-    }
-}
-
-#[derive(Debug, Eq, Hash, PartialEq, Clone)]
-pub struct Variable
-where
-{
-    val: Option<isize>,
+#[derive(Debug, Clone)]
+struct Variable {
     expr: String,
-    min: isize,
-    max: isize,
+    min: f64,
+    max: f64,
+    _val: Option<f64>,
 }
-impl Variable{
-    fn __new__<T: Debug + Eq + Display + Sync + Send + Hash + Clone + NodeMethods<T>>(cls: SymTypes<T>, expr: String, min: isize, max: isize) -> SymTypes<T>{
-        if min >= 0 && min <= max{
-            panic!("invalid variable {:?} {:?} {:?}", expr, min, max);
-        } else if min == max {
-            SymTypes::NumNode(NumNode::new(min))
-        } else {
-            cls.clone()
-        }
-    }
 
-    fn getnewargs(&self) -> (String, isize, isize){
-        (self.expr, self.min, self.max)
-    }
-
-    fn new <T: Debug + Eq + Display + Sync + Send + Hash + Clone + NodeMethods<T>>(expr: String, nmin:isize, nmax: isize) -> Variable
-    {   
-        Variable { val: None, expr, min: nmin, max: nmax }
-    }
-
-    fn val(&self) -> Option<isize>{
-        if self.val.is_none(){
-            panic!("Variable isn't bound, can't access val of {self}");
-        }
-        self.val
-    }
+#[derive(Debug, Clone)]
+enum BTypes {
+    Node(NodeTypes),
+    Int(f64),
 }
-impl<T: Debug + Eq + Display + Sync + Send + Hash + Clone + NodeMethods<T>> NodeMethods<T> for Variable {
+#[derive(Debug, Clone)]
+struct NumNode {
+    b: f64,
+    min: f64,
+    max: f64,
+}
+#[derive(Debug, Clone)]
+struct OpNode{
+    a: Rc<NodeTypes>,
+    b: Rc<BTypes>,
+    min: f64,
+    max: f64
+}
+#[derive(Debug, Clone)]
+struct RedNode{
+    nodes: Vec<NodeTypes>,
+    min: f64,
+    max: f64
+}
+#[derive(Clone)]
+enum NodeTypes {
+    Variable(Variable),
+    NumNode(NumNode),
+    LtNode(OpNode),
+    MulNode(OpNode),
+    DivNode(OpNode),
+    ModNode(OpNode),
+    SumNode(RedNode),
+    AndNode(RedNode)
+}
 
-    fn substitute(&self, var_vals: &HashMap<Variable, &SymTypes<T>>) -> SymTypes<T> {
-        SymTypes::Variable(self.clone())
-    }
-    fn unbind(&self) ->(SymTypes<T>, Option<isize>) {
-        match self.val {
-            Some(v) => {
-                (SymTypes::Variable(*self), None)
-            },
-            None => {panic!("Cannot Unbind {:?}", self);},
-        }
-    }
-
-    fn render(&self, ops: Option<Box<dyn Fn(Box<dyn Any>) -> Box<dyn Any>>>, ctx: Option<&str>) -> String {
-        match ops {
-            Some(o) => {
-                assert!(self.min != self.max);
-                match ctx {
-                    Some(c) => {
-                        if c == "DEBUG" {
+impl NodeMethods for NodeTypes {
+    fn render(&self, ops: &Option<Rc<dyn Any>>, ctx: &Option<&str>) -> &str {
+        match self {
+            NodeTypes::Variable(v) => {
+                ops.and_then(|o|{
+                    ctx.map(|c|{
+                        if c == "DEBUG"{
                             format!(
                                 "{}[{:?}-{:?}{}]",
-                                self.expr,
-                                self.min,
-                                self.max,
-                                if let Some(val) = self.val {
+                                v.expr,
+                                v.min,
+                                v.max,
+                                if let Some(val) = v._val {
                                     format!("={}", val)
                                 } else {
                                     "".to_string()
                                 }
                             )
-                        } else if c == "REPR" {
+                            .as_str()
+                        } else if c == "REPR"{
                             format!(
                                 "Variable('{}', {:?}, {:?}){}",
-                                self.expr,
-                                self.min,
-                                self.max,
-                                if let Some(val) = self.val {
+                                v.expr,
+                                v.min,
+                                v.max,
+                                if let Some(val) = v._val {
                                     format!(".bind({})", val)
                                 } else {
                                     "".to_string()
                                 }
                             )
+                            .as_str()
                         } else {
-                            self.expr.to_string()
+                            v.expr.as_str()
                         }
-                    }
-                    None => self.expr.to_string(),
-                }
+                    })
+                }).unwrap_or_else(|| v.expr.as_str())
             }
-            None => self.expr.to_string(),
+            NodeTypes::NumNode(n) => {
+                ops.and_then(|_| {
+                    ctx.map(|c| {
+                        if c == "REPR" {
+                            format!("NumNode({})", n.b).as_str()
+                        } else {
+                            format!("{}", n.b).as_str()
+                        }
+                    })
+                })
+                .unwrap_or_else(|| format!("{}", n.b).as_str())
+            }
+
+            NodeTypes::LtNode(l) => {
+                assert!(l.min != l.max);
+                format!("{} / {:?}", l.a.render(ops, ctx),l.b).as_str()
+            }
+
+            NodeTypes::MulNode(m) => {
+                assert!(m.min != m.max);
+                render_mulnode(m, ops, ctx)
+            }
+
+            NodeTypes::DivNode(d) => {
+                assert!(d.min != d.max);
+                format!("{} // {:?}", d.a.render(ops, ctx), d.b).as_str()
+            }
+
+            NodeTypes::ModNode(md) => {
+                assert!(md.min != md.max);
+                format!("{} % {:?}", md.a.render(ops, ctx), md.b).as_str()
+            }
+            NodeTypes::SumNode(s) => {
+                assert!(s.min != s.max);
+                let mut vec: Vec<&str> = s.nodes.iter().map(|x| x.render(ops, ctx)).collect::<Vec<&str>>();
+                vec.sort();
+                format!("{}", vec.join("+")).as_str()
+            }
+            NodeTypes::AndNode(a) => {
+                assert!(a.min != a.max);
+                let mut vec: Vec<&str> = a.nodes.iter().map(|x| x.render(ops, ctx)).collect::<Vec<&str>>();
+                vec.sort();
+                format!("{}", vec.join(" and ")).as_str()
+            }
         }
     }
-    fn vars(&self) -> Self{
-        self
-    }
-}
 
-#[derive(Clone, Debug, Eq, PartialEq, Hash)]
-pub struct NumNode {
-    b: isize,
-    min: isize,
-    max: isize,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq, Hash)]
-pub struct MulNode<T>
-    where
-    T: Send + Sync + Debug + Eq + Hash + Display + Clone + NodeMethods<T>,
-{
-    a: Box<SymTypes<T>>,
-    b: (Option<isize>, Option<Box<SymTypes<T>>>),
-    min: Option<isize>,
-    max: Option<isize>,
-}
-
-#[derive(Clone, Eq, PartialEq, Hash, Debug)]
-pub enum SymTypes<T> 
-    where
-        T: Send + Sync + Debug + Eq + Hash + Display + Clone + NodeMethods<T>
-{
-    Variable(Variable),
-    NumNode(NumNode),
-    MulNode(MulNode<T>),
-    SumNode(SumNode<T>),
-    AndNode(AndNode<T>),
-    DivNode(DivNode<T>),
-    LtNode(LtNode<T>)
-}
-
-impl <T : Send + Sync + Debug + Eq + Hash + Display + Clone + NodeMethods<T>>SymTypes<T>{
-    fn unwrap(self) -> T{
+    fn vars(&self) -> Vec<&NodeTypes> {
         match self{
-            Self::AndNode(n) | Self::DivNode(n) | Self::LtNode(n) | Self::MulNode(n) | Self::NumNode(n) | Self::SumNode(n) | Self::Variable(n) => {
-                n
-            }
-        }
-    }
-}
-// impl <T: Sync + Send + Debug + Display + Eq + Hash + Hash + NodeMethods<T>>NodeMethods<T> for MulNode<T>{
-    
-// }
-pub trait RedNodeMethods<T: Sync + Send + Debug + Eq + Hash + Display + Clone + NodeMethods<T>>: NodeMethods<T>{
-    fn new(nodes: Vec<Self>) -> Self where Self: Sized;
-
-    fn get_bounds(&self) -> (isize, isize);
-
-    fn vars(&self)->Vec<Variable>;
-
-}
-#[derive(Debug, Eq, PartialEq, Hash, Clone)]
-struct SumNode<F>
-    where
-        F: Sync + Send + Debug + Eq + Hash + Display + Clone + NodeMethods<F>
-{
-    nodes: Vec<SymTypes<F>>,
-    flat_components: Box<Vec<SymTypes<F>>>,
-    max: Option<isize>,
-    min: Option<isize>
-}
-impl <T: Sync + Send + Debug + Display + Eq + Hash + Clone + NodeMethods<T>> NodeMethods<T> for SumNode<T>{
-    fn render(&self, ops: Option<Box<dyn Fn(Box<dyn Any>) -> Box<dyn Any>>>, ctx: Option<&str>) -> String{
-        match ops{
-            Some(o) => {
-                let mut prod = self.nodes.into_iter().map(|x| {
-                    x.unwrap().render(Some(Box::new(o)), ctx)
-                }).collect::<Vec<_>>();
-
-                prod.sort();
-
-                prod.join("+")
+            _ => vec![],
+            NodeTypes::Variable(_) => vec![self],
+            NodeTypes::LtNode(n) | NodeTypes::DivNode(n) | NodeTypes::ModNode(n) | NodeTypes::MulNode(n) => {
+                let mut result = n.a.vars();
+                match *n.b{
+                    BTypes::Node(b_n) => {result.extend(b_n.vars());},
+                    _ => {result.extend::<Vec<&NodeTypes>>(vec![]);}
+                }
+                result
             },
-            None => {
-                let mut prod = self.nodes.into_iter().map(|x| {
-                    match x {
-                        SymTypes::Variable(n) | SymTypes::DivNode(n) | SymTypes::NumNode(n) | SymTypes::MulNode(n) | SymTypes::SumNode(n) | SymTypes::AndNode(n) | SymTypes::LtNode(n)=> {
-                            n.render(None, ctx)
-                        },
-                    }
-                }).collect::<Vec<String>>();
-
-                prod.sort();
-
-                prod.join("+")
-            }
+            NodeTypes::SumNode(n) | NodeTypes::AndNode(n) => n.nodes.iter().flat_map(|x| x.vars()).collect()
         }
     }
-    fn substitute(&self, var_vals: &HashMap<Variable, &SymTypes<T>>) -> SymTypes<T> {
-        let mut vec = vec![];
-        self.nodes.iter().for_each(|n| {
-            match n{
-                SymTypes::MulNode(v) | SymTypes::SumNode(v)| SymTypes::Variable(v) | SymTypes::NumNode(v) | SymTypes::LtNode(v) | SymTypes::DivNode(v) | SymTypes::AndNode(v)=> {
-                    vec.push(v.substitute(var_vals));
+
+    fn substitute(&self, var_vals: HashMap<NodeTypes, NodeTypes>) -> &NodeTypes {
+        match self{
+            NodeTypes::Variable(v) =>  return &var_vals.get(self).cloned().unwrap_or_else(|| self),
+            NodeTypes::NumNode(n) => self,
+            NodeTypes::LtNode(l) => {
+                match *l.b{
+                    BTypes::Int(i) =>{
+                        return l.a.substitute(var_vals) < &i
+                    },
+                    BTypes::Node(n) => {
+                        return l.a.substitute(var_vals) < n.substitute(var_vals);
+                    }
                 }
             }
-        });
-        SumNode::<T>::sum(vec)
+            NodeTypes::MulNode(m) => {
+                match *m.b{
+                    BTypes::Int(i) => {
+                        return &(*m.a.substitute(var_vals) * i)
+                    }
+                    BTypes::Node(n) => {
+                        return &(*m.a.substitute(var_vals) * *n.substitute(var_vals))
+                    }
+                }
+            }
+
+            //may have to match the Btype enums here if ops dont support inter enum ops
+            NodeTypes::DivNode(d) => {
+                &d.a.substitute(var_vals).floordiv(*d.b, true)
+            }
+            NodeTypes::ModNode(m) => {
+                match *m.b{
+                    BTypes::Int(i) => {&(*m.a.substitute(var_vals) % i)},
+                    BTypes::Node(n) => {&(*m.a.substitute(var_vals) % n)}
+                }
+            }
+            NodeTypes::SumNode(s) =>{
+                &Self::sum(s.nodes.iter().map(|n| *n.substitute(var_vals)).collect::<Vec<NodeTypes>>())
+            }
+            NodeTypes::AndNode(a) => {
+                let vec = vec![];
+                a.nodes.iter().for_each(|n| vec.push(*n.substitute(var_vals)));
+                &Self::ands(&vec)
+            }
+        }
     }
 
-    fn unbind(&self) -> (SymTypes<T>, Option<isize>){
-                let vars =  self.vars();
+    fn unbind(&self) -> (&NodeTypes, Option<f64>) {
+        match self{
+            _ => {
+
                 let mut map = HashMap::new();
-                vars.into_iter().for_each(|v| {
-                    if v.val.is_some(){
-                        let (var, _ )= v.unbind();
-                        map.insert(v, &var);
+                self.vars().into_iter().for_each(|v|{
+                    match v{
+                        NodeTypes::Variable(var) => {
+                            if var._val.is_some(){
+                                map.insert(v.clone(), *v.unbind().0);
+                            }
+                        }
+
+                        _ =>{}
                     }
                 });
-                (self.substitute(&map), None)
+                (self.substitute(map), None)
             }
-}
-impl <T>SumNode<T>
-    where T:Sync + Send + Debug + Eq + Hash + Display + Clone + NodeMethods<T>
-{
-    fn flat_components(&self) -> Vec<SymTypes<T>>{
-        let mut result = vec![];
-        self.nodes.into_iter().map(|n|{
-           match n {
-            SymTypes::SumNode(v) => {
-                v.flat_components.into_iter().map(|n| result.push(n));
-            },
-            SymTypes::MulNode(v) | SymTypes::Variable(v) | SymTypes::NumNode(v) | SymTypes::AndNode(v) | SymTypes::LtNode(v) | SymTypes::DivNode(v)=> {
-                result.push(n);
-            },
-           };
-        });
-        result
-    }
-}
-
-impl <T: Sync + Send + Debug + Display + Eq + Hash + Clone + NodeMethods<T>>NodeMethods<T> for NumNode{
-    fn render(&self, ops: Option<Box<dyn Fn(Box<dyn Any>) -> Box<dyn Any>>>, ctx: Option<&str>) -> String {
-        ops
-            .and_then(|_| ctx.map(|c| if c == "REPR" { format!("NumNode({})", self.b) } else { format!("{}", self.b) }))
-            .unwrap_or_else(|| format!("{}", self.b))
-    }
-    fn substitute(&self, var_vals: &HashMap<Variable, &SymTypes<T>>) -> SymTypes<T> {
-        SymTypes::NumNode(Self)
-    }
-    fn unbind(&self) -> (SymTypes<T>, Option<isize>) {
-        let map = self.vars()
-        .iter()
-        .filter_map(|v| v.val.map(|val| (v, val.unbind().0)))
-        .collect();
-        (self.substitute(map), None)
-    }
-}
-impl NumNode
-{   
-    fn new(num: isize) -> NumNode{
-        NumNode{
-            b: num,
-            min: num,
-            max: num
-        }
-    }
-    fn create_node<T>(ret: SymTypes<T>) -> SymTypes<T>
-        where T: Sync + Send + Debug + Display + Eq + Hash + Clone + NodeMethods<T>
-    {
-        match ret{
-            SymTypes::MulNode(n) | SymTypes::NumNode(n) | SymTypes::SumNode(n) | SymTypes::Variable(n) | SymTypes::AndNode(n) | SymTypes::LtNode(n) | SymTypes::DivNode(n)=> {
-                if n.min <= n.max{
-                    panic!("min greater than max! {:?} {:?} when creating Mulnode {:?}", n.min, n.max, ret);
-                }
-                if n.min == n.max {
-                    SymTypes::NumNode(NumNode { b: n.min.unwrap(), min: n.min, max: n.min })
-                } else{
-                    ret
-                }
+            NodeTypes::Variable(v) =>{
+                assert!(v._val.is_some());
+                (&Variable::init(v.expr.as_str(), v.min, v.max), v._val)
             }
         }
     }
-}
 
-trait OpNodeMethods <T: Sync + Send + Debug + Display + Eq + Hash + Clone + NodeMethods<T>>: NodeMethods<T>{
-    fn new(a: T, b:(Option<T>, Option<isize>))-> Self;
-
-    fn vars(&self) -> Vec<SymTypes<T>>{
-        // let vec_a = self.a.vars();
-        // let (int, node) = &self.b;
-
-        // let mut vec_b;
-
-        // if let Some(n) = node{
-        //     vec_b = node.vars();
-        // } else{
-        //     vec_b = vec![];
-        // }
-
-        // vec_b.extend(vec_a.clone());
-
-        // vec_b
-        let vec_a = self.a.vars();
-        let (int, node) = &self.b;
-
-        let vec_b = node.map_or_else(Vec::new, |n| n.vars());
-
-        vec_b.into_iter().chain(vec_a.clone()).collect()
+    fn key(&self) -> &str {
+        self.render(&None, &Some("DEBUG"))
     }
-
-    fn get_bounds(&self) -> (isize, isize);
+    fn hash(&self) -> u64 {
+        let mut s= DefaultHasher::new();
+        self.key().hash(&mut s);
+        s.finish()
+    }
+}
+impl Hash for NodeTypes{
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.key().hash(state);
+    }
 }
 
-#[derive(Debug)]
-struct LtNode<T>
-    where
-    T: Send + Sync + Debug + Eq + Hash + Display + Clone + NodeMethods<T>
-{
-    a: Box<SymTypes<T>>,
-    b: (Option<isize>, Option<Box<SymTypes<T>>>),
+impl fmt::Debug for NodeTypes{
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.render(&None, &Some("DEBUG")))
+    }
 }
 
-impl <T: Send + Sync + Debug + Eq + Hash + Display + Clone + NodeMethods<T>>OpNodeMethods<T> for LtNode<T>{
-    fn get_bounds(&self) -> (isize, isize) {
-        if let (Some(i), None) = (&self.b.0, &self.b.1) {
-            if *self.a.max < *i {
-                (1, 1)
-            } else if self.a.min >= *i {
-                (0, 0)
-            } else {
-                (0, 1)
+impl fmt::Display for NodeTypes{
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "<{}>", self.key())
+    }
+}
+
+
+impl Into<bool> for NodeTypes{
+fn into(self) -> bool {
+    match self{
+        NodeTypes::DivNode(a) | NodeTypes::LtNode(a) | NodeTypes::ModNode(a) | NodeTypes::MulNode(a) => !(a.min == a.max && a.min == 0.0),
+        other @ _ =>{
+            !(other.min() == other.max() && other.min() == 0.0)
+        }
+    }
+}
+}
+
+impl PartialEq<NodeTypes> for NodeTypes{
+    fn eq(&self, other: &NodeTypes) -> bool {
+        self.key() == other.key()
+    }
+}
+
+impl Neg for NodeTypes{
+    type Output = NodeTypes;
+    fn neg(self) -> Self::Output {
+        self*-1.0
+    }
+}
+
+impl std::ops::Add<NodeTypes> for NodeTypes {
+    type Output = NodeTypes;
+
+    fn add(self, rhs: NodeTypes) -> NodeTypes {
+        NodeTypes::sum(vec![self, rhs])
+    }
+}
+
+impl std::ops::Add<f64> for NodeTypes {
+    type Output = NodeTypes;
+
+    fn add(self, rhs: f64) -> NodeTypes {
+        NodeTypes::sum(vec![self, NumNode::init(rhs)])
+    }
+}
+
+impl std::ops::Add<NodeTypes> for f64{
+    type Output = NodeTypes;
+
+    fn add(self, rhs: NodeTypes) -> Self::Output {
+        rhs + self
+    }
+}
+
+impl std::ops::Sub<NodeTypes> for NodeTypes{
+    type Output = NodeTypes;
+
+    fn sub(self, rhs: NodeTypes) -> Self::Output {
+        self + -rhs
+    }
+}
+
+impl std::ops::Sub<f64> for NodeTypes {
+    type Output = NodeTypes;
+
+    fn sub(self, rhs: f64) -> Self::Output {
+        self + -rhs
+    }
+}
+
+impl std::ops::Sub<NodeTypes> for f64{
+    type Output = NodeTypes;
+
+    fn sub(self, rhs: NodeTypes) -> Self::Output {
+        rhs - self
+    }
+}
+
+impl PartialOrd<NodeTypes> for NodeTypes{
+    fn le(&self, other: &Self) -> bool {
+        self < &(other.clone() + 1.0)
+    }
+    fn gt(&self, other: &NodeTypes) -> bool {
+        (-self.clone()) < (-other.clone())
+    }
+    fn ge(&self, other: &NodeTypes) -> bool {
+        (-self.clone()) < (-other.clone() + 1.0)
+    }
+    fn lt(&self, other: &NodeTypes) -> bool {
+        match self{
+            NodeTypes::MulNode(n) => {
+                self < other
             }
-        } else if let (None, Some(n)) = (&self.b.0, &self.b.1) {
-            if self.a == **n{
-                (0, 0)
+            _ =>{
+                create_node(Self::new_lt(self.clone(), BTypes::Node(other.clone()))).into()
             }
-            if self.a.max < **n.min {
-                (1, 1)
-            } else if self.a.min >= **n.max {
-                (0, 0)
-            } else {
-                (0, 1)
-            }
-        } else {
-            (0, 0)
-        }
-    }
-    
-    fn new(a: T, b:(Option<T>, Option<isize>))-> Self {
-        LtNode{
-            a,
-            b
-        }
-    }
-}
-impl <T: Send + Sync + Debug + Eq + Hash + Display + Clone + NodeMethods<T>>NodeMethods<T> for LtNode<T>{
-    fn substitute(&self, var_vals: &HashMap<Variable, &SymTypes<T>>) -> SymTypes<T>{
-        if let(Some(i), None) = self.b{
-            *self.a.substitute(var_vals) < i
-        }  else if let (None, Some(n)) = self.b {
-            *self.a.substitute(var_vals) < *n.substitute(var_vals)
-        }
-    }
-}
-
-struct DivNode<T: Send + Sync + Debug + Eq + Hash + Display + Clone + NodeMethods<T>>{
-    a: Box<SymTypes<T>>,
-    b: (Option<isize>, Option<Box<SymTypes<T>>>),
-}
-
-impl <T: Send + Sync + Debug + Eq + Hash + Display + Clone + NodeMethods<T>>OpNodeMethods<T> for DivNode<T>{
-    fn new(a: T, b:(Option<T>, Option<isize>))-> Self {
-        DivNode{
-            a,
-            b
-        }
-    }
-    fn get_bounds(&self) -> (isize, isize) {
-        if self.b.1.is_some() && self.b.0.is_none() && self.a.min >= 0 {
-            panic!("ERROR while getting bounds");
         }
         
-        ((self.a.min / self.b.0.unwrap()).floor(), (self.a.max / self.b.0.unwrap()).floor())
+    }
+    fn partial_cmp(&self, other: &NodeTypes) -> Option<std::cmp::Ordering> {
+        if self < other {
+            Some(std::cmp::Ordering::Less)
+        } else if self > other {
+            Some(std::cmp::Ordering::Greater)
+        } else if self == other {
+            Some(std::cmp::Ordering::Equal)
+        } else {
+            None
+        }
     }
 }
-
-impl <T: Send + Sync + Debug + Eq + Hash + Display + Clone + NodeMethods<T>>NodeMethods<T> for DivNode<T>{
-    fn substitute(&self, var_vals: &HashMap<Variable, &SymTypes<T>>) -> SymTypes<T> {
-        match self.b {
-            (Some(i), Some(n)) => panic!("Can't have an int and a node"),
-            (Some(i), None) | (None, Some(i)) => (self.a.substitute(var_vals) / i).floor(),
-            _ => panic!("None types given"),
+impl PartialEq<f64> for NodeTypes{
+    fn eq(&self, other: &f64) -> bool {
+        unimplemented!()
+    }
+}
+impl PartialOrd<f64> for NodeTypes{
+    fn lt(&self, other: &f64) -> bool {
+        match self{
+            _ => {create_node(Self::new_lt(self.clone(), BTypes::Int(*other))).into()}
+            NodeTypes::MulNode(n) => {
+                match *n.b.clone(){
+                    BTypes::Node(n_b) => {
+                        self < other
+                    }
+                    BTypes::Int(i) => {
+                        if i == -1.0{
+                            return self < other
+                        }
+                        let mut sgn = 0.0;
+                        if i > 0.0 {
+                            sgn = 1.0;
+                        } else{
+                            sgn = -1.0;
+                        }
+                        (*n.a.clone()*sgn) < ((other + i.abs() - 1.0)/i.abs()).floor()
+                    }
+                }
+            }
+        }
+    }
+    fn partial_cmp(&self, other: &f64) -> Option<std::cmp::Ordering> {
+        if self < other {
+            Some(std::cmp::Ordering::Less)
+        } else if self > other {
+            Some(std::cmp::Ordering::Greater)
+        } else if self == other {
+            Some(std::cmp::Ordering::Equal)
+        } else {
+            None
         }
     }
 }
 
-#[derive(Debug)]
-struct AndNode<T>
-    where
-        T: Sync + Send + Debug + Eq + Hash + Display + Clone + NodeMethods<T>
-{
-    nodes: Vec<SymTypes<T>>,
-    max: Option<isize>,
-    min: Option<isize>
-}
+impl Mul<NodeTypes> for NodeTypes{
+    type Output = NodeTypes;
 
-impl <T: Send + Sync + Debug + Eq + Hash + Display + Clone + NodeMethods<T>>RedNodeMethods<T> for AndNode<T>{
-    fn new(&self, nodes: Vec<Self>) -> Self where Self: Sized {
-        let (min, max) = self.get_bounds();
-        AndNode{
-            nodes,
-            min: Some(min),
-            max: Some(max)
-        }
-    }
-    fn get_bounds(&self) -> (isize, isize) {
-        (self.nodes.iter().map(|x| x.min).min(), self.nodes.iter().map(|x| x.max).max())
-    }
-}
-impl <T: Send + Sync + Debug + Eq + Hash + Display + Clone + NodeMethods<T>> NodeMethods<T> for AndNode<T>{
-    fn substitute(&self, var_vals: &HashMap<Variable, &SymTypes<T>>) -> SymTypes<T> {
-        let mut subed = vec![];
+    fn mul(self, rhs: Self) -> Self::Output {
+        match self{
 
-        for node in &self.nodes{
-            if let Some(sub) = node.substitute(var_vals){
-                subed.push(sub);
-            } else {
-                return NumNode::new(0);
+            NodeTypes::NumNode(n) => {
+                rhs*n.b
+            }
+            NodeTypes::MulNode(n) => {
+                match *n.b{
+                    BTypes::Int(i) => {
+                        *n.a*(i*rhs)
+                    }
+                    BTypes::Node(nn) => {
+                        *n.a*(nn*rhs)
+                    }
+                }
+            }
+            _ => {
+                match rhs{
+                    NodeTypes::NumNode(n) =>{
+                        create_node(NodeTypes::new_mul(self, BTypes::Int(n.b)))
+                    },
+                    _ =>{
+                        create_node(NodeTypes::new_mul(self, BTypes::Node(rhs)))
+                    }
+                }
             }
         }
 
-        NodeMethods::ands(Some(subed))
+    }
+}
+
+impl Mul<f64> for NodeTypes{
+    type Output = NodeTypes;
+
+    fn mul(self, rhs: f64) -> Self::Output {
+        match self{
+
+            NodeTypes::NumNode(n) =>{
+                NumNode::init(n.b*rhs)
+            }
+            NodeTypes::MulNode(n) => {
+                match *n.b{
+                    BTypes::Int(i) => {
+                        *n.a*(i*rhs)
+                    }
+                    BTypes::Node(nn) => {
+                        *n.a*(nn*rhs)
+                    }
+                }
+            }
+            _ => {
+                if rhs ==0.0 {return NumNode::init(0.0)}
+                if rhs == 1.1{return self}
+                create_node(NodeTypes::new_mul(self, BTypes::Int(rhs)))
+            }
+        }
+    }
+}
+
+impl Mul<NodeTypes> for f64{
+    type Output = NodeTypes;
+
+    fn mul(self, rhs: NodeTypes) -> Self::Output {
+        rhs * self
+    }
+}
+
+impl std::ops::Rem<NodeTypes> for NodeTypes{
+    type Output = NodeTypes;
+
+    fn rem(self, rhs: Self) -> Self::Output {
+        match rhs{
+            NodeTypes::NumNode(n) => {
+                self % n.b
+            },
+            NodeTypes::MulNode(n) =>{
+                match *n.b{
+                    BTypes::Int(i) => {
+                        *n.a * (i % rhs) % rhs
+                    }
+                    BTypes::Node(i) => {
+                        *n.a * (i % rhs) % rhs
+                    }
+                }
+            },
+            NodeTypes::ModNode(_) => {
+                self % rhs
+            }
+            other @ _ =>{
+                if self == rhs{return NumNode::init(0.0)}
+                if (rhs - self).min() > 0.0 && self.min() >= 0.0 {self}
+                else{
+                    panic!("Not supported: {} % {}", self, rhs);
+                }
+            }
+        }
+    }
+}
+
+impl std::ops::Rem<f64> for NodeTypes{
+    type Output = NodeTypes;
+
+    fn rem(self, rhs: f64) -> Self::Output {
+
+        match self{
+            _=>{
+                assert!(rhs > 0.0);
+
+                if rhs == 1.0{return NumNode::init(0.0)}
+        
+                if self.min() >=0.0 && self.max() < rhs{return self - (rhs*((self.min()/rhs).floor()))}
+                if self.min() < 0.0{return (self - (((self.min()/rhs).floor())*rhs)) % rhs}
+        
+                create_node(NodeTypes::new_mod(self, BTypes::Int(rhs)))
+            }
+
+            NodeTypes::MulNode(n) =>{
+                match *n.b{
+                    BTypes::Int(i) => {
+                        *n.a * (i % rhs) % rhs
+                    }
+                    BTypes::Node(i) => {
+                        *n.a * (i % rhs) % rhs
+                    }
+                }
+            }
+        }
+
+    }
+}
+
+impl std::ops::Rem<NodeTypes> for f64{
+    type Output = NodeTypes;
+
+    fn rem(self, rhs: NodeTypes) -> Self::Output {
+        NumNode::init(self) % rhs
+    }
+}
+
+fn sym_render <'a>(a: &BTypes, ops:&Option<Rc<dyn Any>>, ctx: &'a Option<&str>) -> &'a str{
+    match a{
+        BTypes::Int(i) => {
+            format!("{}", i).as_str()
+        }
+        BTypes::Node(n) => {
+            n.render(ops, ctx)
+        }
+    }
+}
+
+fn render_mulnode<'a>(m: &OpNode, ops: &Option<Rc<dyn Any>>, ctx: &Option<&str> ) -> &'a str{
+    match *m.a{
+        NodeTypes::Variable(v_a) => {
+            match *m.b{
+                BTypes::Node(n) => {
+                    match n{
+                        NodeTypes::Variable(v_b) => {
+                            if v_b.expr < v_a.expr{
+                                return format!("{} * {}", sym_render(&*m.b, &ops, &ctx), m.a.render(&ops, ctx)).as_str();
+                            } else{
+                                return format!("{} * {}", m.a.render(&ops, ctx), sym_render(&*m.b, &ops, &ctx)).as_str();
+                            }
+                        }
+                        _ => {
+                            return format!("{} * {}", m.a.render(&ops, ctx), sym_render(&*m.b, &ops, &ctx)).as_str();
+                        }
+                    }
+                }
+                _ => {
+                    return format!("{} * {}", m.a.render(&ops, ctx), sym_render(&*m.b, &ops, &ctx)).as_str();
+                }
+            }
+        }
+        _ =>{
+            return format!("{} * {}", m.a.render(&ops, ctx), sym_render(&*m.b, &ops, &ctx)).as_str();
+        }
+    }
+}
+
+fn create_node(ret: NodeTypes) -> NodeTypes{
+    assert!(ret.min() <= ret.max());
+    if ret.min() == ret.max(){
+        NumNode::init(ret.min())
+    } else{
+        ret
+    }
+}
+impl Variable{
+    fn init(expr: &str, nmin: f64, nmax: f64) -> NodeTypes{
+        NodeTypes::Variable(Variable{
+            expr: expr.to_string(),
+            min: nmin,
+            max: nmax,
+            _val: None
+        })
+    }
+}
+
+impl NumNode{
+    fn init(num: f64) -> NodeTypes{
+        NodeTypes::NumNode(NumNode { b: num, min: num, max: num })
+    }
+}
+
+impl NodeTypes{
+    fn new_lt(a: NodeTypes, b: BTypes) -> NodeTypes{
+        let (min, max) = NodeTypes::get_bounds(&NodeTypes::LtNode(OpNode{a: Rc::new(a), b: Rc::new(b), min: 0.0, max: 0.0}));
+
+        NodeTypes::LtNode(OpNode{a: a.into(), b: Rc::new(b), min, max})
+    }
+    fn new_mul(a: NodeTypes, b: BTypes) -> NodeTypes{
+        let (min, max) = NodeTypes::get_bounds(&NodeTypes::MulNode(OpNode{a: Rc::new(a), b: Rc::new(b), min: 0.0, max: 0.0}));
+
+        NodeTypes::MulNode(OpNode{a: a.into(), b: Rc::new(b), min, max})
+    }
+    fn new_div(a: NodeTypes, b: BTypes) -> NodeTypes{
+        let (min, max) = NodeTypes::get_bounds(&NodeTypes::DivNode(OpNode{a: Rc::new(a), b: Rc::new(b), min: 0.0, max: 0.0}));
+
+        NodeTypes::DivNode(OpNode{a: a.into(), b: Rc::new(b), min, max})
+    }
+    fn new_mod(a: NodeTypes, b: BTypes) -> NodeTypes{
+        let (min, max) = NodeTypes::get_bounds(&NodeTypes::ModNode(OpNode{a: Rc::new(a), b: Rc::new(b), min: 0.0, max: 0.0}));
+
+        NodeTypes::ModNode(OpNode{a: Rc::new(a), b: Rc::new(b), min, max})
+    }
+
+    fn min(&self) -> f64{
+        match self{
+            NodeTypes::DivNode(n) | NodeTypes::LtNode(n) | NodeTypes::ModNode(n) | NodeTypes::MulNode(n) => {
+                n.min
+            },
+            NodeTypes::AndNode(n) | NodeTypes::SumNode(n) => {
+                n.min
+            },
+            NodeTypes::NumNode(n) => {
+                n.min
+            }
+            NodeTypes::Variable(n) => {
+                n.min
+            }
+        }
+    }
+
+    fn max(&self) -> f64{
+        match self{
+            NodeTypes::DivNode(n) | NodeTypes::LtNode(n) | NodeTypes::ModNode(n) | NodeTypes::MulNode(n) => {
+                n.max
+            },
+            NodeTypes::AndNode(n) | NodeTypes::SumNode(n) => {
+                n.max
+            },
+            NodeTypes::NumNode(n) => {
+                n.max
+            }
+            NodeTypes::Variable(n) => {
+                n.max
+            }
+        }
+    }
+
+    fn floordiv(&self, b: BTypes, factoring_allowed: bool) -> Self{
+
+        match self{
+            NodeTypes::MulNode(n) => {
+                match *n.b{
+                    BTypes::Int(i) => {
+                            match b{
+                                BTypes::Int(ii) => {
+                                    if i % ii == 0.0{
+                                        *n.a*((i/ii).floor())
+                                    } else if ii % i == 0.0 && i > 0.0{
+                                        n.a.floordiv(BTypes::Int((ii/i).floor()), true)
+                                    } else{
+                                        self.floordiv(b, factoring_allowed)
+                                    }
+                                }
+                                BTypes::Node(nn) => {
+                                    if i % nn == 0.0{
+                                        *n.a*(NodeTypes::rfloordiv(i, b))
+                                    } else if nn % i == 0.0 && i > 0.0{
+                                        n.a.floordiv(BTypes::Node(nn.floordiv(*n.b, factoring_allowed)), true)
+                                    } else{
+                                        self.floordiv(b, factoring_allowed)
+                                    }
+                                }
+                            }
+                    }
+                    BTypes::Node(i) => {
+                        match b{
+                            BTypes::Int(ii) => {
+                                if i % ii == 0.0{
+                                    *n.a*(i.floordiv(b, true))
+                                } else if ii % i == 0.0 && i > 0.0{
+                                    n.a.floordiv(BTypes::Node(NodeTypes::rfloordiv(ii, *n.b)), true)
+                                } else{
+                                    self.floordiv(b, factoring_allowed)
+                                }
+                            }
+                            BTypes::Node(nn) => {
+                                if i % nn == 0.0{
+                                    *n.a*(i.floordiv(b, true))
+                                } else if nn % i == 0.0 && i > 0.0{
+                                    n.a.floordiv(BTypes::Node(nn.floordiv(*n.b, factoring_allowed)), true)
+                                } else{
+                                    self.floordiv(b, factoring_allowed)
+                                }
+                            }
+                        }
+                }
+                }
+            }
+            NodeTypes::DivNode(n) => {
+                match *n.b{
+                    BTypes::Int(i) => {
+                        match b{
+                            BTypes::Int(ii) => {
+                                n.a.floordiv(BTypes::Int(ii*i), factoring_allowed)
+                            }
+                            BTypes::Node(ii) => {
+                                n.a.floordiv(BTypes::Node(ii*i), factoring_allowed)
+                            }
+                        }
+                    }
+                    BTypes::Node(i) => {
+                        match b{
+                            BTypes::Int(ii) => {
+                                n.a.floordiv(BTypes::Node(ii*i), factoring_allowed)
+                            }
+                            BTypes::Node(ii) => {
+                                n.a.floordiv(BTypes::Node(ii*i), factoring_allowed)
+                            }
+                        }
+                    }
+                }
+            }
+            NodeTypes::ModNode(n) => {
+                match b{
+                    BTypes::Int(i) =>{
+                        match *n.b{
+                            BTypes::Int(ii) => {
+                                if ii % i == 0.0{
+                                    n.a.floordiv(b, true) % (ii/i).floor()
+                                }
+                                else{
+                                    self.floordiv(b, factoring_allowed)
+                                }
+                            }
+                            BTypes::Node(nn) => {
+                                if nn % i == 0.0{
+                                    n.a.floordiv(b, factoring_allowed) % nn.floordiv(b, true)
+                                }
+                                else{
+                                    self.floordiv(b, factoring_allowed)
+                                }
+                            }
+                        }
+                    }
+                    BTypes::Node(i) =>{
+                        match *n.b{
+                            BTypes::Int(ii) => {
+                                if ii % i == 0.0{
+                                    n.a.floordiv(b, factoring_allowed) % NodeTypes::rfloordiv(ii, b)
+                                }
+                                else{
+                                    self.floordiv(b, factoring_allowed)
+                                }
+                            }
+                            BTypes::Node(nn) => {
+                                if nn % i == 0.0{
+                                    n.a.floordiv(b, factoring_allowed) % nn.floordiv(b, factoring_allowed)
+                                }
+                                else{
+                                    self.floordiv(b, factoring_allowed)
+                                }
+                            }
+                        }
+                    }  
+                }
+            }
+            _ => {
+        match b{
+            BTypes::Node(n) =>{
+                match n{
+                    NodeTypes::NumNode(num) => {
+                        self.floordiv(BTypes::Int(num.b), factoring_allowed)
+                    }
+                    _ =>{
+                        if *self == n{
+                            NumNode::init(1.0)
+                        } else if (n - self.clone()).min() > 0.0 && self.min() >= 0.0{
+                            NumNode::init(0.0)
+                        } else{
+                            panic!("Not supported: {}, {:?}",self, b)
+                        }
+                    }
+                }
+            }
+            BTypes::Int(i) => {
+                assert!(i != 0.0);
+                if i < 0.0{
+                    return self.floordiv(BTypes::Int(-i), factoring_allowed)*-1.0
+                }
+                if i == 1.0{return self.clone()}
+
+                if self.min() < 0.0{
+                    let offset = self.min() / i.floor();
+                    return (self.clone() + -offset*i).floordiv(b, false) + offset
+                }
+                create_node(NodeTypes::new_div(self.clone(), b))
+            }
+        }}
+    }}
+    fn rfloordiv(a: f64, b: BTypes) -> NodeTypes{
+        NumNode::init(a).floordiv(b, true)
+    }
+}
+
+impl OpNodeMethods for NodeTypes{
+    fn get_bounds(&self) -> (f64, f64) {
+        todo!()
     }
 }
