@@ -1224,3 +1224,4 @@ impl I2Ncmp for f64{
         (-other.clone()).n2i_gt(&(-self.clone() + 1.0))
     }
 }
+
