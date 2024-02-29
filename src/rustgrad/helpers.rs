@@ -294,10 +294,10 @@ where
 
 pub fn partition<T, F>(lst: Vec<T>, fxn: F) -> (Vec<T>, Vec<T>)
 where
-    T: Copy,
-    F: Fn(&T) -> Option<T>,
+    T: Sized,
+    F: Fn(&T) -> bool,
 {
-    let (a, b): (Vec<T>, Vec<T>) = lst.into_iter().partition(|s| fxn(s).is_some());
+    let (a, b): (Vec<T>, Vec<T>) = lst.into_iter().partition(|s| fxn(s));
     (a, b)
 }
 

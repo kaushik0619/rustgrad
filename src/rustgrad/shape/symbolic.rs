@@ -1,7 +1,9 @@
 use core::fmt;
 use std::{any::Any, borrow::Borrow, collections::{hash_map::DefaultHasher, HashMap}, hash::{Hash, Hasher}, ops::{Deref, Mul, Neg}, rc::Rc};
-use num::{integer, Float, Num, ToPrimitive};
-trait NodeMethods {
+use num::{integer::{self, gcd}, Float, Num, ToPrimitive};
+
+use crate::rustgrad::helpers::partition;
+pub trait NodeMethods {
     //maybe could also use dyn Any return type
     fn render(&self, ops: &Option<Rc<dyn Any>>, ctx: &Option<&str>) -> String;
 
@@ -22,16 +24,16 @@ trait NodeMethods {
     fn ands(nodes: &Vec<NodeTypes>) -> NodeTypes;
 }
 
-trait OpNodeMethods: NodeMethods {
+pub trait OpNodeMethods: NodeMethods {
     fn get_bounds(&self) -> (f64, f64);
 }
 
-trait RedNodeMethods: NodeMethods {
+pub trait RedNodeMethods: NodeMethods {
 
     fn get_bounds(&self) -> (f64, f64);
 }
 #[derive(Debug, Clone)]
-struct Variable {
+pub struct Variable {
     expr: String,
     min: f64,
     max: f64,
@@ -39,31 +41,31 @@ struct Variable {
 }
 
 #[derive(Debug, Clone)]
-enum BTypes {
+pub enum BTypes {
     Node(NodeTypes),
     Int(f64),
 }
 #[derive(Debug, Clone)]
-struct NumNode {
+pub struct NumNode {
     b: f64,
     min: f64,
     max: f64,
 }
 #[derive(Debug, Clone)]
-struct OpNode{
+pub struct OpNode{
     a: Rc<NodeTypes>,
     b: Rc<BTypes>,
     min: f64,
     max: f64
 }
 #[derive(Debug, Clone)]
-struct RedNode{
+pub struct RedNode{
     nodes: Vec<NodeTypes>,
     min: f64,
     max: f64
 }
 #[derive(Clone)]
-enum NodeTypes {
+pub enum NodeTypes {
     Variable(Variable),
     NumNode(NumNode),
     LtNode(OpNode),
@@ -76,40 +78,32 @@ enum NodeTypes {
 
 impl NodeMethods for NodeTypes {
     fn render(&self, ops: &Option<Rc<dyn Any>>, ctx: &Option<&str>) -> String {
-        match &self {
+        match self {
             NodeTypes::Variable(v) => {
-                ops.as_ref().and_then(|o|{
-                    ctx.map(|c|{
-                        if c == "DEBUG"{
+                ops.as_ref().and_then(|_| {
+                    ctx.map(|c| {
+                        if c == "DEBUG" {
                             format!(
                                 "{}[{:?}-{:?}{}]",
-                                v.expr.clone(),
-                                v.min.clone(),
-                                v.max.clone(),
-                                if let Some(val) = v._val {
-                                    format!("={}", val)
-                                } else {
-                                    "".to_string()
-                                }
+                                &v.expr,
+                                &v.min,
+                                &v.max,
+                                v._val.map_or_else(|| "".to_string(), |val| format!("={}", val))
                             )
-                            
-                        } else if c == "REPR"{
+                        } else if c == "REPR" {
                             format!(
                                 "Variable('{}', {:?}, {:?}){}",
-                                v.expr.clone(),
-                                v.min.clone(),
-                                v.max.clone(),
-                                if let Some(val) = v._val {
-                                    format!(".bind({})", val)
-                                } else {
-                                    "".to_string()
-                                }
+                                &v.expr,
+                                &v.min,
+                                &v.max,
+                                v._val.map_or_else(|| "".to_string(), |val| format!(".bind({})", val))
                             )
                         } else {
                             v.expr.clone()
                         }
                     })
-                }).unwrap_or_else(|| v.expr.clone())
+                })
+                .unwrap_or_else(|| v.expr.clone())
             }
             NodeTypes::NumNode(n) => {
                 ops.as_ref().and_then(|_| {
@@ -123,101 +117,57 @@ impl NodeMethods for NodeTypes {
                 })
                 .unwrap_or_else(|| format!("{}", n.b))
             }
-
+    
             NodeTypes::LtNode(l) => {
                 assert!(l.min != l.max);
-                format!("{} / {:?}", l.a.render(ops, ctx),l.b.clone())
+                format!("{} / {:?}", l.a.render(ops, ctx), &l.b)
             }
-
+    
             NodeTypes::MulNode(m) => {
                 assert!(m.min != m.max);
                 render_mulnode(m, ops, ctx)
             }
-
+    
             NodeTypes::DivNode(d) => {
                 assert!(d.min != d.max);
-                format!("{} // {:?}", d.a.render(ops, ctx), d.b.clone())
+                format!("{} // {:?}", d.a.render(ops, ctx), &d.b)
             }
-
+    
             NodeTypes::ModNode(md) => {
                 assert!(md.min != md.max);
-                format!("{} % {:?}", md.a.render(ops, ctx), md.b.clone())
+                format!("{} % {:?}", md.a.render(ops, ctx), &md.b)
             }
             NodeTypes::SumNode(s) => {
                 assert!(s.min != s.max);
-                let mut vec: Vec<String> = s.nodes.iter().map(|x| x.render(ops, ctx)).collect::<Vec<String>>();
+                let mut vec: Vec<String> = s.nodes.iter().map(|x| x.render(ops, ctx)).collect();
                 vec.sort();
                 format!("{}", vec.join("+"))
             }
             NodeTypes::AndNode(a) => {
-                assert!(a.min!= a.max);
-                let mut vec: Vec<String> = a.nodes.iter().map(|x| x.render(ops, ctx)).collect::<Vec<String>>();
+                assert!(a.min != a.max);
+                let mut vec: Vec<String> = a.nodes.iter().map(|x| x.render(ops, ctx)).collect();
                 vec.sort();
                 format!("{}", vec.join(" and "))
             }
         }
     }
-
     fn vars(&self) -> Vec<&NodeTypes> {
-        match &self{
+        match self {
             NodeTypes::Variable(_) => vec![self],
-            NodeTypes::LtNode(n) | NodeTypes::DivNode(n) | NodeTypes::ModNode(n) | NodeTypes::MulNode(n) => {
+            NodeTypes::LtNode(n)
+            | NodeTypes::DivNode(n)
+            | NodeTypes::ModNode(n)
+            | NodeTypes::MulNode(n) => {
                 let mut result = n.a.vars();
-                match n.b.as_ref(){
-                    BTypes::Node(b_n) => {result.extend(b_n.vars());},
-                    _ => {result.extend::<Vec<&NodeTypes>>(vec![]);}
+                if let BTypes::Node(b_n) = n.b.as_ref() {
+                    result.extend(b_n.vars());
                 }
                 result
-            },
-            NodeTypes::SumNode(n) | NodeTypes::AndNode(n) => n.nodes.iter().flat_map(|x| x.vars()).collect(),
+            }
+            NodeTypes::SumNode(n) | NodeTypes::AndNode(n) => n.nodes.iter().flat_map(NodeTypes::vars).collect(),
             _ => vec![],
-
         }
     }
-
-    // fn substitute(&self, var_vals: &HashMap<NodeTypes, NodeTypes>) -> NodeTypes {
-    //     match &self{
-    //         NodeTypes::Variable(v) =>  var_vals.get(self).cloned().unwrap_or_else(|| self.clone()),
-    //         NodeTypes::NumNode(n) => self.clone(),
-    //         NodeTypes::LtNode(l) => {
-    //             match l.b.as_ref(){
-    //                 BTypes::Int(i) =>{
-    //                     return l.a.substitute(var_vals).n2i_lt(&i)
-    //                 },
-    //                 BTypes::Node(n) => {
-    //                     return l.a.substitute(var_vals).n2n_lt(&(n.substitute(var_vals)));
-    //                 }
-    //             }
-    //         }
-    //         NodeTypes::MulNode(m) => {
-    //             match m.b.as_ref(){
-    //                 BTypes::Int(i) => {
-    //                     return m.a.substitute(var_vals) * *i
-    //                 }
-    //                 BTypes::Node(n) => {
-    //                     return m.a.substitute(var_vals) * n.substitute(var_vals).clone()
-    //                 }
-    //             }
-    //         }
-    //         NodeTypes::DivNode(d) => {
-    //             d.a.substitute(var_vals).floordiv(d.b.as_ref().clone(), true)
-    //         }
-    //         NodeTypes::ModNode(m) => {
-    //             match m.b.as_ref(){
-    //                 BTypes::Int(i) => {m.a.substitute(var_vals) % *i},
-    //                 BTypes::Node(n) => {m.a.substitute(var_vals) % n.clone()}
-    //             }
-    //         }
-    //         NodeTypes::SumNode(s) =>{
-    //             Self::sum(s.nodes.iter().map(|n| n.substitute(var_vals)).collect::<Vec<NodeTypes>>())
-    //         }
-    //         NodeTypes::AndNode(a) => {
-    //             let mut vec = vec![];
-    //             a.nodes.iter().for_each(|n| vec.push(n.substitute(var_vals)));
-    //             Self::ands(&vec)
-    //         }
-    //     }
-    // }
     fn substitute(&self, var_vals: &HashMap<NodeTypes, NodeTypes>) -> NodeTypes {
         match self {
             NodeTypes::Variable(_) => var_vals.get(self).cloned().unwrap_or_else(|| self.clone()),
@@ -246,7 +196,7 @@ impl NodeMethods for NodeTypes {
         }
     }
     fn unbind(&self) -> (NodeTypes, Option<f64>) {
-        match &self{
+        match self{
             NodeTypes::Variable(v) =>{
                 assert!(v._val.is_some());
                 (Variable::init(v.expr.as_str(), v.min, v.max), v._val)
@@ -310,8 +260,8 @@ impl NodeMethods for NodeTypes {
                                 BTypes::Int(i) => {
                                     mul_groups.insert(n.a.as_ref().clone(), BTypes::Node(i.clone() + b_n.clone()));
                                 }
-                                BTypes::Node(bb_N) => {
-                                    mul_groups.insert(n.a.as_ref().clone(), BTypes::Node(bb_N.clone() + b_n.clone()));
+                                BTypes::Node(bb_n) => {
+                                    mul_groups.insert(n.a.as_ref().clone(), BTypes::Node(bb_n.clone() + b_n.clone()));
                                 }
                             }
                         }
@@ -321,8 +271,8 @@ impl NodeMethods for NodeTypes {
                                 BTypes::Int(ii) => {
                                     mul_groups.insert(n.a.as_ref().clone(), BTypes::Int(ii + i.clone()));
                                 }
-                                BTypes::Node(bb_N) => {
-                                    mul_groups.insert(n.a.as_ref().clone(), BTypes::Node(bb_N.clone() + i.clone()));
+                                BTypes::Node(bb_n) => {
+                                    mul_groups.insert(n.a.as_ref().clone(), BTypes::Node(bb_n.clone() + i.clone()));
                                 }
                             }
                         }
@@ -391,7 +341,7 @@ impl NodeMethods for NodeTypes {
             return nodes[0].to_owned();
         }
         let mut tmp = vec![];
-        nodes.into_iter().map(|n|{
+        nodes.into_iter().for_each(|n|{
             if n.min() != n.max(){
                 tmp.push(n.to_owned());
             }
@@ -497,82 +447,12 @@ impl std::ops::Sub<NodeTypes> for f64{
     }
 }
 
-// impl PartialOrd<NodeTypes> for NodeTypes{
-//     fn le(&self, other: &Self) -> bool {
-//         self < &(other.clone() + 1.0)
-//     }
-//     fn gt(&self, other: &NodeTypes) -> bool {
-//         (-self.clone()) < (-other.clone())
-//     }
-//     fn ge(&self, other: &NodeTypes) -> bool {
-//         (-self.clone()) < (-other.clone() + 1.0)
-//     }
-//     fn lt(&self, other: &NodeTypes) -> bool {
-//         match self{
-//             NodeTypes::MulNode(n) => {
-//                 self < other
-//             }
-//             _ =>{
-//                 create_node(Self::new_lt(self.clone(), BTypes::Node(other.clone()))).into()
-//             }
-//         }
-        
-//     }
-//     fn partial_cmp(&self, other: &NodeTypes) -> Option<std::cmp::Ordering> {
-//         if self < other {
-//             Some(std::cmp::Ordering::Less)
-//         } else if self > other {
-//             Some(std::cmp::Ordering::Greater)
-//         } else if self == other {
-//             Some(std::cmp::Ordering::Equal)
-//         } else {
-//             None
-//         }
-//     }
-// }
 impl PartialEq<f64> for NodeTypes{
     fn eq(&self, other: &f64) -> bool {
         NumNode::init(other.clone()) == self.clone()
     }
 }
 impl Eq for NodeTypes{}
-// impl PartialOrd<f64> for NodeTypes{
-//     fn lt(&self, other: &f64) -> bool {
-//         match self{
-//             _ => {create_node(Self::new_lt(self.clone(), BTypes::Int(*other))).into()}
-//             NodeTypes::MulNode(n) => {
-//                 match *n.b.clone(){
-//                     BTypes::Node(n_b) => {
-//                         self < other
-//                     }
-//                     BTypes::Int(i) => {
-//                         if i == -1.0{
-//                             return self < other
-//                         }
-//                         let mut sgn = 0.0;
-//                         if i > 0.0 {
-//                             sgn = 1.0;
-//                         } else{
-//                             sgn = -1.0;
-//                         }
-//                         (*n.a.clone()*sgn) < ((other + i.abs() - 1.0)/i.abs()).floor()
-//                     }
-//                 }
-//             }
-//         }
-//     }
-//     fn partial_cmp(&self, other: &f64) -> Option<std::cmp::Ordering> {
-//         if self < other {
-//             Some(std::cmp::Ordering::Less)
-//         } else if self > other {
-//             Some(std::cmp::Ordering::Greater)
-//         } else if self == other {
-//             Some(std::cmp::Ordering::Equal)
-//         } else {
-//             None
-//         }
-//     }
-// }
 
 impl Mul<NodeTypes> for NodeTypes{
     type Output = NodeTypes;
@@ -615,7 +495,7 @@ impl Mul<f64> for NodeTypes{
     type Output = NodeTypes;
 
     fn mul(self, rhs: f64) -> Self::Output {
-        match self{
+        match &self{
 
             NodeTypes::NumNode(n) =>{
                 NumNode::init(n.b*rhs)
@@ -661,30 +541,30 @@ impl std::ops::Rem<NodeTypes> for NodeTypes{
             NodeTypes::MulNode(n) =>{
                 match n.b.as_ref(){
                     BTypes::Int(i) => {
-                        n.a.as_ref().to_owned() * (i.to_owned() % rhs.clone()) % rhs.to_owned()
+                        n.a.as_ref().to_owned() * (i.to_owned() % rhs.clone()) % rhs
                     }
                     BTypes::Node(i) => {
-                        n.a.as_ref().to_owned() * (i.to_owned() % rhs.clone()) % rhs.to_owned()
+                        n.a.as_ref().to_owned() * (i.to_owned() % rhs.clone()) % rhs
                     }
                 }
             },
             NodeTypes::ModNode(_) => {
-                self % rhs.to_owned()
+                self % rhs
             }
             NodeTypes::SumNode(s) => {
                 if self.clone() ==rhs.clone() {return NumNode::init(0.0)}
-                if (rhs.clone()-self.clone()).min() > 0.0{return self.to_owned()}
+                if (rhs.clone()-self.clone()).min() > 0.0{return self}
                 let mut result = vec![];
                 s.nodes.iter().for_each(|n|{
                     match n{
                         NodeTypes::NumNode(_) => {
-                            result.push(n.clone()%rhs.to_owned());
+                            result.push(n.to_owned()%rhs.to_owned());
                         }
                         NodeTypes::MulNode(_) => {
-                            result.push(n.clone()%rhs.to_owned());
+                            result.push(n.to_owned()%rhs.to_owned());
                         }
                         _ => {
-                            result.push(n.clone());
+                            result.push(n.to_owned());
                         }
                     }
                 });
@@ -692,7 +572,7 @@ impl std::ops::Rem<NodeTypes> for NodeTypes{
             }
              _ =>{
                 if self == rhs{return NumNode::init(0.0)}
-                if (rhs.clone() - self.clone()).min() > 0.0 && self.min() >= 0.0 {self.to_owned()}
+                if (rhs.clone() - self.clone()).min() > 0.0 && self.min() >= 0.0 {self}
                 else{
                     panic!("Not supported: {} % {}", self.borrow(), rhs.borrow());
                 }
@@ -917,18 +797,18 @@ impl NodeTypes{
                                     if i % ii == 0.0{
                                         n.a.as_ref().to_owned()*((i/ii).floor())
                                     } else if ii % i == 0.0 && i > &0.0{
-                                        n.a.floordiv(BTypes::Int((ii.to_owned()/i.to_owned()).floor()), true)
+                                        n.a.floordiv(BTypes::Int((ii/i).floor()), true)
                                     } else{
                                         self.floordiv(b, factoring_allowed)
                                     }
                                 }
                                 BTypes::Node(nn) => {
                                     if i.clone() % nn.clone() == 0.0{
-                                        n.a.as_ref().to_owned()*(NodeTypes::rfloordiv(i.to_owned(), b))
+                                        n.a.as_ref().to_owned()*(NodeTypes::rfloordiv(*i, b))
                                     } else if nn.clone() % i.clone() == 0.0 && i > &0.0{
                                         n.a.floordiv(BTypes::Node(nn.floordiv(n.b.as_ref().to_owned(), factoring_allowed)), true)
                                     } else{
-                                        self.floordiv(b.to_owned(), factoring_allowed)
+                                        self.floordiv(b, factoring_allowed)
                                     }
                                 }
                             }
@@ -939,18 +819,18 @@ impl NodeTypes{
                                 if i.clone() % ii.to_owned() == 0.0{
                                     n.a.as_ref().to_owned()*(i.floordiv(b, true))
                                 } else if ii.clone() % i.clone() == 0.0 && i.n2i_gt(&0.0).into(){
-                                    n.a.floordiv(BTypes::Node(NodeTypes::rfloordiv(ii.to_owned(), n.b.as_ref().to_owned())), true)
+                                    n.a.floordiv(BTypes::Node(NodeTypes::rfloordiv(*ii, n.b.as_ref().to_owned())), true)
                                 } else{
-                                    self.floordiv(b.to_owned(), factoring_allowed)
+                                    self.floordiv(b, factoring_allowed)
                                 }
                             }
                             BTypes::Node(nn) => {
                                 if i.to_owned() % nn.clone() == 0.0{
                                     n.a.as_ref().to_owned()*(i.floordiv(b, true))
-                                } else if nn.clone() % i.clone() == 0.0 && i.n2i_gt(&0.0).into(){
+                                } else if nn.clone() % i.to_owned() == 0.0 && i.n2i_gt(&0.0).into(){
                                     n.a.floordiv(BTypes::Node(nn.floordiv(n.b.as_ref().to_owned(), factoring_allowed)), true)
                                 } else{
-                                    self.floordiv(b.to_owned(), factoring_allowed)
+                                    self.floordiv(b, factoring_allowed)
                                 }
                             }
                         }
@@ -972,7 +852,7 @@ impl NodeTypes{
                     BTypes::Node(i) => {
                         match &b{
                             BTypes::Int(ii) => {
-                                n.a.floordiv(BTypes::Node(ii.to_owned()*i.to_owned()), factoring_allowed)
+                                n.a.floordiv(BTypes::Node(*ii*i.to_owned()), factoring_allowed)
                             }
                             BTypes::Node(ii) => {
                                 n.a.floordiv(BTypes::Node(ii.to_owned()*i.to_owned()), factoring_allowed)
@@ -1010,7 +890,7 @@ impl NodeTypes{
                                     n.a.floordiv(b.to_owned(), factoring_allowed) % NodeTypes::rfloordiv(ii.to_owned(), b)
                                 }
                                 else{
-                                    self.floordiv(b.to_owned(), factoring_allowed)
+                                    self.floordiv(b, factoring_allowed)
                                 }
                             }
                             BTypes::Node(nn) => {
@@ -1035,11 +915,11 @@ impl NodeTypes{
                         if i.clone() == 1.0{
                             return self.to_owned()
                         } if !factoring_allowed{
-                            return self.deref().floordiv(b.to_owned(), factoring_allowed)
+                            return self.floordiv(b, factoring_allowed)
                         }
                         let mut _gcd = i.clone();
                         let mut divisor = 1.0;
-                        self.flat_components().iter().map(|n| {
+                        self.flat_components().iter().for_each(|n| {
                             match n{
                                 NodeTypes::NumNode(x) => {
                                     if x.b%i.clone() == 0.0{
@@ -1069,7 +949,7 @@ impl NodeTypes{
                                                 }
                                             }
                                         }
-                                        BTypes::Node(nnn) => {
+                                        BTypes::Node(_) => {
                                             _gcd = 1.0;
                                         }
                                     }
@@ -1094,9 +974,9 @@ impl NodeTypes{
                         let mut fully_divided:Vec<NodeTypes> = vec![];
 
                         let mut rest:Vec<NodeTypes> = vec![];
-                        self.flat_components().iter().map(|x|{
+                        self.flat_components().iter().for_each(|x|{
                             if x.clone()%n_b1.to_owned() ==0.0{
-                                fully_divided.push(x.floordiv(b.clone(), factoring_allowed).to_owned());
+                                fully_divided.push(x.floordiv(b.clone(), factoring_allowed));
                             }
                             else{
                                 rest.push(x.to_owned());
@@ -1104,7 +984,7 @@ impl NodeTypes{
                         });
                         let sum_fully_divided = create_node(NodeTypes::new_sum(fully_divided));
                         if sum_fully_divided != 0.0{
-                            return (sum_fully_divided + create_node(NodeTypes::new_sum(rest))).floordiv(b.to_owned(), factoring_allowed)
+                            return (sum_fully_divided + create_node(NodeTypes::new_sum(rest))).floordiv(b, factoring_allowed)
                         }
                         return self.floordiv(b, false)
                     }
@@ -1131,15 +1011,15 @@ impl NodeTypes{
             BTypes::Int(i) => {
                 assert!(i.clone() != 0.0);
                 if i.clone() < 0.0{
-                    return self.floordiv(BTypes::Int(-i.to_owned()), factoring_allowed)*-1.0
+                    return self.floordiv(BTypes::Int(-i), factoring_allowed)*-1.0
                 }
                 if i.clone() == 1.0{return self.to_owned()}
 
                 if self.min() < 0.0{
                     let offset = self.min() / i.borrow().floor();
-                    return (self.clone() + -offset.borrow()*i.to_owned()).floordiv(b, false) + offset.to_owned()
+                    return (self.clone() + -offset.borrow()*i.to_owned()).floordiv(b, false) + offset
                 }
-                create_node(NodeTypes::new_div(self.to_owned(), b.to_owned()))
+                create_node(NodeTypes::new_div(self.to_owned(), b))
             }
         }}
     }}
@@ -1161,6 +1041,9 @@ impl NodeTypes{
             NodeTypes::MulNode(n) => {
                 self.n2n_le(&(other.clone()))
             }
+            NodeTypes::SumNode(s) =>{
+                self.n2n_lt(other)
+            }
             _ =>{
                 create_node(Self::new_lt(self.clone(), BTypes::Node(other.clone())))
             }
@@ -1171,7 +1054,7 @@ impl NodeTypes{
         match self{
             NodeTypes::MulNode(n) => {
                 match n.b.as_ref(){
-                    BTypes::Node(n_b) => {
+                    BTypes::Node(_) => {
                         self.n2i_lt(&other.clone())
                     }
                     BTypes::Int(i) => {
@@ -1188,6 +1071,96 @@ impl NodeTypes{
                     }
                 }
             },
+            NodeTypes::SumNode(s) =>{
+                let mut temp = other.clone();
+                let mut new_sum = vec![];
+                let mut numn = other.to_owned();
+                s.nodes.iter().for_each(|n|{
+                    if let NodeTypes::NumNode(num) = n{
+                        numn = numn - num.b; 
+                    } else{
+                        new_sum.push(n.to_owned());
+                    }
+                });
+                let mut lhs = NodeTypes::sum(new_sum);
+                let nodes;
+                if let NodeTypes::SumNode(s) = lhs.clone(){
+                    nodes = s.nodes;
+                } else{
+                    nodes = vec![lhs.clone()];
+                }
+
+                assert!(nodes.iter().all(|nd|{
+                    match nd{
+                        NodeTypes::DivNode(n) | NodeTypes::LtNode(n) | NodeTypes::ModNode(n) => {
+                            if let BTypes::Int(_) = n.b.as_ref().to_owned(){
+                                return true
+                            }
+                            return false
+                        },
+                        NodeTypes::NumNode(_) => {
+                            return true
+                        }
+                        NodeTypes::MulNode(n) => {
+                            if let BTypes::Int(_) = n.b.as_ref().to_owned(){
+                                return true
+                            }
+                            return false
+                        }
+                        _ => {
+                            return false
+                        }
+                    }
+
+                }), "Not Supported");
+
+                let (muls, others) = partition(nodes, |x|{
+                    if let NodeTypes::MulNode(m) = x{
+                        match m.b.as_ref(){
+                            BTypes::Int(i) => {
+                                if i.to_owned() > 0.0 && x.max() >=other.to_owned(){ return true}
+                                else{return false}
+                            }
+                            BTypes::Node(n) => {
+                                if n.n2i_gt(0.0.borrow()).into() && x.max() >= other.to_owned(){return true}
+                                else{return false}
+                            }
+                        }
+                    } else{return false}
+                });
+                let mut mul_gcd =other.to_owned();
+                muls.iter().for_each(|x|{
+                    match x{
+                        NodeTypes::DivNode(n) | NodeTypes::LtNode(n) | NodeTypes::ModNode(n) | NodeTypes::MulNode(n) => {
+                            if let BTypes::Int(i) = n.b.as_ref(){
+                                mul_gcd = gcd(mul_gcd.floor().to_isize().unwrap(), i.floor().floor().to_isize().unwrap()).to_f64().unwrap();
+                            }else{
+                                panic!("There is a bug here idiot");
+                            }
+                        },
+                        NodeTypes::AndNode(_) | NodeTypes::SumNode(_) => {
+                            panic!("There is a bug here idiot");
+                        },
+                        NodeTypes::NumNode(n) => {
+
+                                mul_gcd = gcd(mul_gcd.floor().to_isize().unwrap(), n.b.floor().floor().to_isize().unwrap()).to_f64().unwrap();
+
+                        }
+                        NodeTypes::Variable(_) => {
+                            panic!("There is a bug here idiot");
+                        }
+                    }
+                });
+                let all_others = NodeTypes::sum(others);
+                if all_others.min() >= 0.0 && all_others.max() < mul_gcd{
+                    lhs = NodeTypes::sum(muls.iter().map(|v|{
+                        v.floordiv(BTypes::Int(mul_gcd), true)
+                    }).collect());
+                    temp = (temp/mul_gcd).floor()
+                }
+                
+                lhs.n2i_lt(&temp)
+               }
             _ => {create_node(Self::new_lt(self.clone(), BTypes::Int(*other)))}
 
         }
@@ -1208,7 +1181,7 @@ impl NodeTypes{
                 let mut result = vec![];
                 s.nodes.iter().for_each(|x| {
                     match x{
-                        NodeTypes::SumNode(s)=>{
+                        NodeTypes::SumNode(_)=>{
                             result.extend(x.flat_components());
                         }
                         _ => {
