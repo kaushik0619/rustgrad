@@ -1,1 +1,3 @@
-# I have no idea how rust works actually... Doing my best... XD
+#Rustgrad
+Everthing here is experimental and needs a ton of refactoring
+
