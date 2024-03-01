@@ -1,5 +1,5 @@
 use core::fmt;
-use std::{any::Any, borrow::Borrow, collections::{hash_map::DefaultHasher, HashMap}, hash::{Hash, Hasher}, ops::{Deref, Mul, Neg}, rc::Rc};
+use std::{any::Any, borrow::Borrow, collections::{hash_map::DefaultHasher, HashMap}, hash::{Hash, Hasher}, ops::{Add, Deref, Mul, Neg}, rc::Rc};
 use num::{integer::{self, gcd}, Float, Num, ToPrimitive};
 
 use crate::rustgrad::helpers::partition;
