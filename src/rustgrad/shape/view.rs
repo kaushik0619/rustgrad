@@ -371,7 +371,7 @@ impl View{
         vec.extend_from_slice(&self.shape);
         vec.extend_from_slice(&self.strides);
         vec.push(self.offset.clone());
-        vec.extend_from_slice(&flatten_mask);
+        vec.extend(flatten_mask);
     
         let f = if let BTypes::Node(n) = vec[0].clone(){
             Some(n)
