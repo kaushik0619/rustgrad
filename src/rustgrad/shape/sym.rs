@@ -3,12 +3,12 @@ use std::borrow::Borrow;
 use std::cell::RefCell;
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
-use std::ops::{Mul, Rem};
+use std::ops::{Mul, Rem, Sub};
 use std::rc::Weak;
 use std::{any::Any, collections::HashMap, fmt::Debug, ops::Deref, rc::Rc};
 
 use num::integer::gcd;
-use num::ToPrimitive;
+use num::{Num, ToPrimitive};
 
 use crate::rustgrad::helpers::partition;
 type N = Rc<NodeTypes>;
@@ -1498,6 +1498,89 @@ impl PartialEq<f64> for NodeTypes {
     }
 }
 
+impl <'a> Sub<&'a BTypes> for &'a BTypes{
+    type Output = BTypes;
+
+    fn sub(self, rhs: &'a BTypes) -> Self::Output {
+        match (self, rhs){
+            (BTypes::Int(i), BTypes::Int(ii)) => {
+                BTypes::Int(i - ii)
+            }
+            (BTypes::Int(i), BTypes::Node(n)) => {
+                BTypes::Node(i - n.clone().deref())
+            }
+            (BTypes::Node(n), BTypes::Int(i)) => {
+                BTypes::Node(n.clone().deref() - i)
+            }
+            (BTypes::Node(n), BTypes::Node(nn)) => {
+                BTypes::Node(n.clone().deref() - nn.clone().deref())
+            }
+        }
+    }
+}
+
+impl <'a> std::ops::Add<&'a BTypes> for &'a BTypes{
+    type Output = BTypes;
+
+    fn add(self, rhs: &'a BTypes) -> Self::Output {
+        match (self, rhs){
+            (BTypes::Int(i), BTypes::Int(ii)) => {
+                BTypes::Int(i + ii)
+            }
+            (BTypes::Int(i), BTypes::Node(n)) => {
+                BTypes::Node(n.clone().deref() + i)
+            }
+            (BTypes::Node(n), BTypes::Int(i)) => {
+                BTypes::Node(n.clone().deref() + i)
+            }
+            (BTypes::Node(n), BTypes::Node(nn)) => {
+                BTypes::Node(n.clone().deref() + nn.clone().deref())
+            }
+        }
+    }
+}
+
+impl <'a> std::ops::Mul<&'a BTypes> for &'a BTypes{
+    type Output = BTypes;
+
+    fn mul(self, rhs: &'a BTypes) -> Self::Output {
+        match (self, rhs){
+            (BTypes::Int(i), BTypes::Int(ii)) => {
+                BTypes::Int(i * ii)
+            }
+            (BTypes::Int(i), BTypes::Node(n)) => {
+                BTypes::Node(n.clone().deref() * i)
+            }
+            (BTypes::Node(n), BTypes::Int(i)) => {
+                BTypes::Node(n.clone().deref() * i)
+            }
+            (BTypes::Node(n), BTypes::Node(nn)) => {
+                BTypes::Node(n.clone().deref() * nn.clone().deref())
+            }
+        }
+    }
+}
+
+impl <'a> std::ops::Rem<&'a BTypes> for &'a BTypes{
+    type Output = BTypes;
+
+    fn rem(self, rhs: &'a BTypes) -> Self::Output {
+        match (self, rhs){
+            (BTypes::Int(i), BTypes::Int(ii)) => {
+                BTypes::Int(i % ii)
+            }
+            (BTypes::Int(i), BTypes::Node(n)) => {
+                BTypes::Node(n.clone().deref() % i)
+            }
+            (BTypes::Node(n), BTypes::Int(i)) => {
+                BTypes::Node(n.clone().deref() % i)
+            }
+            (BTypes::Node(n), BTypes::Node(nn)) => {
+                BTypes::Node(n.clone().deref() % nn.clone().deref())
+            }
+        }
+    }
+}
 impl PartialEq<BTypes> for BTypes {
     fn eq(&self, other: &BTypes) -> bool {
         match (self, other) {
@@ -1640,6 +1723,23 @@ impl BTypes {
                 _ => return self,
             },
             _ => return self,
+        }
+    }
+
+    pub fn floordiv(&self, b: &BTypes, factoring_allowed: bool) -> BTypes{
+        match (self, b){
+            (BTypes::Int(i), BTypes::Int(ii)) => {
+                BTypes::Int((i /ii).floor())
+            }
+            (BTypes::Int(i), BTypes::Node(n)) => {
+                BTypes::Node(NodeTypes::rfloordiv(i, b))
+            }
+            (BTypes::Node(n), BTypes::Int(i)) => {
+                BTypes::Node(n.clone().floordiv(b, true))
+            }
+            (BTypes::Node(n), BTypes::Node(nn)) => {
+                BTypes::Node(n.clone().floordiv(b, true))
+            }
         }
     }
 }
