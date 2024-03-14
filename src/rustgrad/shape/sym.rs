@@ -1918,3 +1918,15 @@ impl Hash for NodeTypes {
         self.key().hash(state);
     }
 }
+
+impl std::iter::Product<BTypes> for BTypes {
+    fn product<I: Iterator<Item = BTypes>>(iter: I) -> Self {
+        iter.fold(Self::Int(1.0), |acc, x| &acc * &x)
+    }
+}
+
+impl std::iter::Sum<BTypes> for BTypes{
+    fn sum<I: Iterator<Item = BTypes>>(iter: I) -> Self {
+        iter.fold(Self::Int(0.0), |acc, s| &acc + &s)
+    }
+}

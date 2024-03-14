@@ -1,34 +1,36 @@
 use core::panic;
+use std::{ops::Deref, rc::Rc};
 
 use cached::proc_macro::cached;
+use itertools::{any, Itertools};
 use num::ToPrimitive;
 
-use super::sym::BTypes;
+use super::sym::{BTypes, NodeMethods, NodeTypes};
 
-fn canonicalize_strides(shape: &[isize], strides: &[isize]) -> Vec<isize> {
+fn canonicalize_strides(shape: &[BTypes], strides: &[BTypes]) -> Vec<BTypes> {
     shape
         .iter()
         .zip(strides)
-        .map(|(s, st)| if *s == 1 { 0 } else { st.clone() })
+        .map(|(s, st)| if *s == BTypes::Int(1.0) { BTypes::Int(0.0) } else { st.clone() })
         .collect()
 }
 
 
-fn strides_for_shape(shape: &[isize]) -> Vec<isize> {
+fn strides_for_shape(shape: &[BTypes]) -> Vec<BTypes> {
     if shape.is_empty() {
         return Vec::new();
     }
 
-    let strides: Vec<_> = shape[1..]
+    let strides: Vec<BTypes> = shape[1..]
         .iter()
         .rev()
-        .scan(1, |state, &val| {
-            *state *= val;
-            Some(*state)
+        .scan(1, |state, val| {
+            let s = &BTypes::Int(state.clone().to_f64().unwrap()) * &val;
+            Some(s)
         })
         .collect();
     
-    canonicalize_strides(shape, &strides.iter().rev().cloned().collect::<Vec<isize>>())
+    canonicalize_strides(shape, &strides.iter().rev().cloned().collect::<Vec<BTypes>>())
 }
 
 // fn merge_dims(shape: &[isize], strides: &[isize], mask: Option<&[(isize, isize)]>) -> Vec<(isize, isize, isize)> {
@@ -161,20 +163,20 @@ fn reshape_mask(view: &View, new_shape: &[BTypes]) -> (Option<Vec<(BTypes, BType
             return (view.mask.clone(), true);
         }
 
-        let mut new_mask = Vec::with_capacity(new_shape.len());
-        let mut r_masks = mask.iter().rev();
-        let mut r_shape = view.shape.iter().rev();
-        let mut r_new_shape = new_shape.iter().rev();
-        let mut curr_stride = BTypes::Int(1.0);
-        let mut old_dim = r_shape.next().cloned().unwrap_or(BTypes::Int(1.0));
-        let mut new_dim = r_new_shape.next().cloned().unwrap_or(BTypes::Int(1.0));
+        let mut new_mask: Vec<(BTypes, BTypes)> = Vec::with_capacity(new_shape.len());
+        let mut r_masks: std::iter::Rev<std::slice::Iter<'_, (BTypes, BTypes)>> = mask.iter().rev();
+        let mut r_shape: std::iter::Rev<std::slice::Iter<'_, BTypes>> = view.shape.iter().rev();
+        let mut r_new_shape: std::iter::Rev<std::slice::Iter<'_, BTypes>> = new_shape.iter().rev();
+        let mut curr_stride: BTypes = BTypes::Int(1.0);
+        let mut old_dim: BTypes = r_shape.next().cloned().unwrap_or(BTypes::Int(1.0));
+        let mut new_dim: BTypes = r_new_shape.next().cloned().unwrap_or(BTypes::Int(1.0));
 
         if &(&mask.last().unwrap().1 - &mask.last().unwrap().0) < &BTypes::Int(1.0) {
             return (Some(vec![(BTypes::Int(0.0), BTypes::Int(0.0)); new_shape.len()]), false);
         }
 
         while let Some((l, r)) = r_masks.next() {
-            let next_stride = &new_dim * &curr_stride;
+            let next_stride: BTypes = &new_dim * &curr_stride;
 
             if &old_dim >= &next_stride {
                 if &old_dim == &next_stride {
@@ -211,10 +213,177 @@ fn reshape_mask(view: &View, new_shape: &[BTypes]) -> (Option<Vec<(BTypes, BType
     (view.mask.clone(), false)
 }
 
+fn un1d(shape: &[BTypes], offs: &BTypes) -> Vec<BTypes> {
+    let strides: Vec<BTypes> = strides_for_shape(shape);
+    let mut result: Vec<BTypes> = Vec::new();
+    let mut offs_n = offs.clone();
+    if strides.is_empty() {
+        result.push(BTypes::Int(0.0));
+    } else {
+        for stride in &strides {
+            let here: BTypes = offs_n.floordiv(stride, true);
+            result.push(here.clone());
+            offs_n = offs - &(&here * stride);
+        }
+    }
+
+    result
+}
 struct View{
     shape: Vec<BTypes>,
     strides: Vec<BTypes>,
     offset: BTypes,
     mask: Option<Vec<(BTypes, BTypes)>>,
     contiguous: bool
+}
+
+impl View{
+    fn size(&self) -> f64{
+        let ret:BTypes = self.shape.iter().map(|x|{
+            match x{
+                BTypes::Node(n) => NodeTypes::max(n.clone().deref()).unwrap(),
+                BTypes::Int(_) => x.clone()
+            }
+        }).product();
+
+        match ret{
+            BTypes::Int(i) => i,
+            BTypes::Node(_) => panic!("{}", format!("{:?} is not int", ret))
+        }
+    }
+
+    // fn create(shape: &[BTypes], strides:Option<&[BTypes]>, offset: BTypes, mask: Option<Vec<(BTypes, BTypes)>>) -> View{
+    //     let mut strides_n: Vec<BTypes>;
+    //     let mut offset_n = offset;
+    //     let mut mask_n = mask;
+    //     if let None = strides{
+    //         strides_n = strides_for_shape(shape);
+    //     }else{
+    //         strides_n = canonicalize_strides(shape, strides.unwrap());
+    //     }
+    //     if let Some(m) = &mask_n{
+    //         if m.iter().zip(shape.iter()).all(|(x, y)|{
+    //             *x == (BTypes::Int(0.0), y.clone())
+    //         }){
+    //             mask_n = None;
+    //         }
+    //     }
+    //     let contiguous = offset_n == BTypes::Int(0.0) && mask_n.is_none() && strides == Some(&strides_for_shape(shape));
+    //     let m = mask_n.clone().unwrap();
+    //     let elim =  m.iter().map(|(b,e)|{
+    //         !(&(b + &BTypes::Int(1.0)) < e)
+    //     });
+    //     if mask_n.is_some() && elim.clone().any(|x|x){
+    //         if m.iter().any(|(b, e)|{
+    //             !(b < e)
+    //         }){
+    //             strides_n = vec![BTypes::Int(0.0); shape.len()];
+    //             offset_n = BTypes::Int(0.0);
+    //             mask_n = Some(vec![(BTypes::Int(0.0), BTypes::Int(0.0)); shape.len()]);
+    //         }
+
+    //         offset_n = &offset_n + &elim.clone().enumerate().map(|(i, e)|{
+    //             if e{
+    //                 &strides_n[i] * &(mask_n.clone().unwrap()[i].0)
+    //             } else {
+    //                 BTypes::Int(0.0)
+    //             }
+    //         }).sum();
+
+    //         strides_n = strides_n.iter().zip(elim).map(|(st, e)|{
+    //             if e{
+    //                 BTypes::Int(0.0)
+    //             } else{
+    //                 st.clone()
+    //             }
+    //         }).collect();
+    //     }
+    //     View{shape: shape.to_vec(), strides: strides_n, offset: offset_n, mask: mask_n, contiguous: contiguous}
+    // }
+    fn create(shape: &[BTypes], strides: Option<&[BTypes]>, offset: BTypes, mask: Option<Vec<(BTypes, BTypes)>>) -> View {
+        let mut strides_n: Vec<BTypes> = strides.unwrap_or(&strides_for_shape(shape)).to_vec();
+    
+        let mask_n = mask.map(|m| {
+            if m.iter().zip(shape.iter()).all(|(x, y)| *x == (BTypes::Int(0.0), y.clone())) {
+                None
+            } else {
+                Some(m)
+            }
+        }).flatten();
+    
+        let contiguous = offset == BTypes::Int(0.0) && mask_n.is_none() && strides == Some(&strides_for_shape(shape));
+    
+        if let Some(mask_ref) = &mask_n {
+            if mask_ref.iter().any(|(b, e)| !(b < e)) {
+                strides_n = vec![BTypes::Int(0.0); shape.len()];
+                return View {
+                    shape: shape.to_vec(),
+                    strides: strides_n,
+                    offset: BTypes::Int(0.0),
+                    mask: Some(vec![(BTypes::Int(0.0), BTypes::Int(0.0)); shape.len()]),
+                    contiguous: true,
+                };
+            }
+    
+            let elim = mask_ref.iter().map(|(b, e)| !(&(b + &BTypes::Int(1.0)) < e));
+    
+            let offset_n = elim.clone().enumerate().fold(offset, |acc, (i, e)| {
+                if e {
+                    &acc + &(&strides_n[i] * &mask_ref[i].0)
+                } else {
+                    acc
+                }
+            });
+    
+            strides_n = strides_n.iter().zip(elim).map(|(st, e)| {
+                if e {
+                    BTypes::Int(0.0)
+                } else {
+                    st.clone()
+                }
+            }).collect();
+    
+            return View {
+                shape: shape.to_vec(),
+                strides: strides_n.to_vec(),
+                offset: offset_n,
+                mask: mask_n,
+                contiguous: contiguous,
+            };
+        }
+    
+        View {
+            shape: shape.to_vec(),
+            strides: strides_n.to_vec(),
+            offset: offset,
+            mask: mask_n,
+            contiguous: contiguous,
+        }
+    }
+
+    fn vars(&self) -> Rc<NodeTypes> {
+        let mut flatten_mask = Vec::new();
+        if let Some(v) = &self.mask {
+            flatten_mask.extend(v.iter().flat_map(|(x, y)| vec![x.clone(), y.clone()]));
+        }
+    
+        let mut vec = Vec::new();
+        vec.extend_from_slice(&self.shape);
+        vec.extend_from_slice(&self.strides);
+        vec.push(self.offset.clone());
+        vec.extend_from_slice(&flatten_mask);
+    
+        let f = if let BTypes::Node(n) = vec[0].clone(){
+            Some(n)
+        }else{
+            None
+        };
+        NodeTypes::ands(&vec.iter().flat_map(|x| {
+            if let BTypes::Node(n) = x {
+                n.clone().vars()
+            } else {
+                Vec::new()
+            }
+        }).collect())
+    }
 }
