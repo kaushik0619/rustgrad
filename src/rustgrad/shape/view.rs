@@ -373,11 +373,6 @@ impl View{
         vec.push(self.offset.clone());
         vec.extend(flatten_mask);
     
-        let f = if let BTypes::Node(n) = vec[0].clone(){
-            Some(n)
-        }else{
-            None
-        };
         NodeTypes::ands(&vec.iter().flat_map(|x| {
             if let BTypes::Node(n) = x {
                 n.clone().vars()
