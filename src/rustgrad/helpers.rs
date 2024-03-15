@@ -137,7 +137,7 @@ pub fn all_same<T: PartialEq>(items: &Vec<T>) -> bool {
     }
 }
 
-pub fn all_int<T: Num>(t: &Vec<T>) -> bool {
+pub fn all_int<T>(t: &Vec<T>) -> bool {
     t.iter().all(|_| true)
 }
 

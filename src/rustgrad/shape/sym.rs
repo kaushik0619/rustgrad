@@ -21,7 +21,7 @@ pub struct Variable {
     expr: String,
     min: Option<f64>,
     max: Option<BTypes>,
-    val: Option<f64>,
+    pub val: Option<f64>,
     ptr: RefCell<Option<Weak<NodeTypes>>>,
 }
 #[derive(Clone)]
@@ -1149,23 +1149,23 @@ impl NodeTypes {
         NumNode::init(a).floordiv(b, true)
     }
 
-    fn n2n_le(&self, other: &Self) -> N {
+    pub fn n2n_le(&self, other: &Self) -> N {
         self.n2n_lt(&(other + &1.0))
     }
-    fn n2n_gt(&self, other: &NodeTypes) -> N {
+    pub fn n2n_gt(&self, other: &NodeTypes) -> N {
         -(self.n2n_lt(&((-other).deref() + &1.0))).deref()
     }
-    fn n2n_lt(&self, other: &NodeTypes) -> N {
+    pub fn n2n_lt(&self, other: &NodeTypes) -> N {
         match self {
             NodeTypes::MulNode(_) => self.n2n_le(other),
             NodeTypes::SumNode(_) => self.n2n_lt(other),
             _ => create_node(Self::new_lt(self.ptr(), BTypes::Node(other.ptr()))),
         }
     }
-    fn n2n_ge(&self, other: &NodeTypes) -> N {
+    pub fn n2n_ge(&self, other: &NodeTypes) -> N {
         (-self).n2n_lt(((-other).deref() + &1.0).deref())
     }
-    fn n2i_lt(&self, other: &f64) -> N {
+    pub fn n2i_lt(&self, other: &f64) -> N {
         match self {
             NodeTypes::MulNode(n) => match &n.b {
                 BTypes::Node(_) => self.n2i_lt(other),
@@ -1302,14 +1302,14 @@ impl NodeTypes {
             _ => create_node(Self::new_lt(self.ptr(), BTypes::Int(*other))),
         }
     }
-    fn n2i_le(&self, other: &f64) -> N {
+    pub fn n2i_le(&self, other: &f64) -> N {
         self.n2i_lt(&(other + 1.0))
     }
-    fn n2i_gt(&self, other: &f64) -> N {
+    pub fn n2i_gt(&self, other: &f64) -> N {
         (-self).n2i_lt(&(-other))
     }
 
-    fn n2i_ge(&self, other: &f64) -> N {
+    pub fn n2i_ge(&self, other: &f64) -> N {
         (-self).n2i_lt(&(-other + 1.0))
     }
 
@@ -1325,7 +1325,7 @@ impl NodeTypes {
     }
 }
 impl NumNode {
-    fn init(a: &f64) -> N {
+    pub fn init(a: &f64) -> N {
         let nd = Rc::new(NodeTypes::NumNode(NumNode {
             b: a.clone(),
             min: Some(a.clone()),
@@ -1344,7 +1344,7 @@ impl NumNode {
 }
 
 impl Variable{
-    fn init(expr: &String, val: &Option<f64>, min: &Option<f64>, max: &Option<BTypes>) -> N{
+    pub fn new(expr: &String, val: &Option<f64>, min: &Option<f64>, max: &Option<BTypes>) -> N{
         let un_max = max.clone().unwrap();
         let un_min = min.clone().unwrap();
         match &un_max{
@@ -1371,7 +1371,18 @@ impl Variable{
         nd
     }
 
-    fn val(&self) -> Option<f64>{
+    pub fn init(expr: String, nmin: f64, nmax: &BTypes) -> Rc<NodeTypes>{
+
+        
+        let nd = Rc::new(NodeTypes::Variable(Variable { expr: expr, min: Some(nmin), max: Some(nmax.clone()), val: None, ptr:RefCell::new(None) }));
+
+        if let NodeTypes::Variable(v) = nd.clone().deref(){
+            v.ptr.borrow_mut().replace(Rc::downgrade(&nd));
+        }
+
+        nd
+    }
+    pub fn val(&self) -> Option<f64>{
         assert!(self.val.is_some(), "{}", format!("Varible isn't bound can't access val of {:?}", self));
         self.val.clone()
     }
@@ -1540,6 +1551,44 @@ impl <'a> std::ops::Add<&'a BTypes> for &'a BTypes{
     }
 }
 
+impl <'a> std::ops::Add<&'a NodeTypes> for &'a BTypes{
+    type Output = N;
+
+    fn add(self, rhs: &'a NodeTypes) -> Self::Output {
+        match &self{
+            BTypes::Int(i) => rhs + i,
+            BTypes::Node(n) => n.clone().deref() + rhs
+        }
+    }
+}
+impl <'a> std::ops::Mul<&'a NodeTypes> for &'a BTypes{
+    type Output = N;
+
+    fn mul(self, rhs: &'a NodeTypes) -> Self::Output {
+        match &self{
+            BTypes::Int(i) => rhs *i,
+            BTypes::Node(n) => n.clone().deref() * rhs
+        }
+    }
+}
+impl <'a > std::ops::Add<&'a BTypes> for &'a NodeTypes{
+    type Output = N;
+    fn add(self, rhs: &'a BTypes) -> Self::Output {
+        match &rhs{
+            BTypes::Int(i) => self + i,
+            BTypes::Node(n) => n.clone().deref() + self
+        }
+    }
+}
+impl <'a > std::ops::Mul<&'a BTypes> for &'a NodeTypes{
+    type Output = N;
+    fn mul(self, rhs: &'a BTypes) -> Self::Output {
+        match &rhs{
+            BTypes::Int(i) => self * i,
+            BTypes::Node(n) => n.clone().deref() * self
+        }
+    }
+}
 impl <'a> std::ops::Mul<&'a BTypes> for &'a BTypes{
     type Output = BTypes;
 
@@ -1561,6 +1610,34 @@ impl <'a> std::ops::Mul<&'a BTypes> for &'a BTypes{
     }
 }
 
+impl <'a> std::ops::Div<&'a BTypes> for &'a BTypes{
+    type Output = BTypes;
+
+    fn div(self, rhs: &'a BTypes) -> Self::Output {
+        match (self, rhs){
+            (BTypes::Int(i), BTypes::Int(ii)) => {
+                BTypes::Int(i / ii)
+            }
+            _ => unreachable!()
+        }
+    }
+}
+impl Eq for BTypes{}
+impl Ord for BTypes{
+    fn max(self, other: Self) -> Self
+        where
+            Self: Sized, {
+        if self > other{
+            self
+        } else{
+            other
+        }
+    }
+
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        unimplemented!()
+    }
+}
 impl <'a> std::ops::Rem<&'a BTypes> for &'a BTypes{
     type Output = BTypes;
 
