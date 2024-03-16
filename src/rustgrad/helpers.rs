@@ -2,6 +2,7 @@ use cached::proc_macro::cached;
 use colored::*;
 use dirs::home_dir;
 use erased_serde::Serialize;
+use itertools::Itertools;
 use lazy_static::lazy_static;
 use libloading::{Library, Symbol};
 use lru::LruCache;
@@ -117,16 +118,10 @@ where
 //     temp
 // }
 
-pub fn argsort<T, F>(data: &Vec<T>, key: F) -> Vec<usize>
-where
-    T: PartialOrd,
-    F: Fn(&T) -> usize,
-{
-    let mut indices: Vec<usize> = (0..data.len()).collect();
-
-    indices.sort_by_key(|&a| key(&data[a]));
-
-    indices
+pub fn argsort<T: Ord>(seq: &[T]) -> Vec<isize> {
+    let mut indices: Vec<usize> = (0..seq.len()).collect();
+    indices.sort_by_key(|&i| &seq[i]);
+    indices.into_iter().map(|x| x as isize).collect_vec()
 }
 
 pub fn all_same<T: PartialEq>(items: &Vec<T>) -> bool {

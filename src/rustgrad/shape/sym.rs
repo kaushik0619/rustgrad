@@ -3,7 +3,7 @@ use std::borrow::Borrow;
 use std::cell::RefCell;
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
-use std::ops::{Mul, Rem, Sub};
+use std::ops::{Mul, Neg, Rem, Sub};
 use std::rc::Weak;
 use std::{any::Any, collections::HashMap, fmt::Debug, ops::Deref, rc::Rc};
 
@@ -39,7 +39,7 @@ pub struct OpNode {
 }
 #[derive(Debug, Clone)]
 pub struct NumNode {
-    b: f64,
+    pub b: f64,
     min: Option<f64>,
     max: Option<BTypes>,
     ptr: RefCell<Option<Weak<NodeTypes>>>,
@@ -1996,14 +1996,25 @@ impl Hash for NodeTypes {
     }
 }
 
-impl std::iter::Product<BTypes> for BTypes {
-    fn product<I: Iterator<Item = BTypes>>(iter: I) -> Self {
-        iter.fold(Self::Int(1.0), |acc, x| &acc * &x)
+impl<'a> std::iter::Product<&'a BTypes> for BTypes {
+    fn product<I: Iterator<Item = &'a BTypes>>(iter: I) -> BTypes {
+        iter.fold(Self::Int(1.0), |acc, x| &acc * x)
     }
 }
 
 impl std::iter::Sum<BTypes> for BTypes{
     fn sum<I: Iterator<Item = BTypes>>(iter: I) -> Self {
         iter.fold(Self::Int(0.0), |acc, s| &acc + &s)
+    }
+}
+
+impl Neg for &BTypes{
+    type Output = BTypes;
+
+    fn neg(self) -> Self::Output {
+        match self{
+            BTypes::Int(i) => BTypes::Int( -i.clone()),
+            BTypes::Node(n) => BTypes::Node(-n.clone().deref())
+        }
     }
 }
