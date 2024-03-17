@@ -237,16 +237,16 @@ fn un1d(shape: &Vec<BTypes>, offs: &BTypes) -> Vec<BTypes> {
     result
 }
 #[derive(Clone)]
-struct View{
-    shape: Vec<BTypes>,
-    strides: Vec<BTypes>,
-    offset: BTypes,
-    mask: Option<Vec<(BTypes, BTypes)>>,
-    contiguous: bool
+pub struct View{
+    pub shape: Vec<BTypes>,
+    pub strides: Vec<BTypes>,
+    pub offset: BTypes,
+    pub mask: Option<Vec<(BTypes, BTypes)>>,
+    pub contiguous: bool
 }
 
 impl View{
-    fn size(&self) -> f64{
+    pub fn size(&self) -> f64{
         let ret:BTypes = self.shape.iter().map(|x|{
             match x{
                 BTypes::Node(n) => NodeTypes::max(n.clone().deref()).unwrap(),
@@ -308,7 +308,7 @@ impl View{
     //     }
     //     View{shape: shape.to_vec(), strides: strides_n, offset: offset_n, mask: mask_n, contiguous: contiguous}
     // }
-    fn create(shape: &Vec<BTypes>, strides: Option<&Vec<BTypes>>, offset: BTypes, mask: Option<Vec<(BTypes, BTypes)>>) -> View {
+    pub fn create(shape: &Vec<BTypes>, strides: Option<&Vec<BTypes>>, offset: BTypes, mask: Option<Vec<(BTypes, BTypes)>>) -> View {
         let mut strides_n: Vec<BTypes> = strides.unwrap_or(&strides_for_shape(shape)).to_vec();
     
         let mask_n = mask.map(|m| {
@@ -369,7 +369,7 @@ impl View{
         }
     }
 
-    fn vars(&self) -> Vec<Rc<NodeTypes>> {
+    pub fn vars(&self) -> Vec<Rc<NodeTypes>> {
         let mut flatten_mask = Vec::new();
         if let Some(v) = &self.mask {
             flatten_mask.extend(v.iter().flat_map(|(x, y)| vec![x.clone(), y.clone()]));
@@ -448,7 +448,7 @@ impl View{
     //     var_unboundvar_val.into_iter().for_each(|x: (Rc<NodeTypes>, (Rc<NodeTypes>, Option<f64>))| {hm.insert(x.1.0, x.1.1);});
     //     (View::create(&new_shape, Some(&new_strides), new_offset, new_mask), hm)
     // }
-    fn unbind(&self) -> (View, HashMap<Rc<NodeTypes>, Option<f64>>) {
+    pub fn unbind(&self) -> (View, HashMap<Rc<NodeTypes>, Option<f64>>) {
         let var_unboundvar_val: Vec<(Rc<NodeTypes>, (Rc<NodeTypes>, Option<f64>))> = self.vars()
             .iter()
             .filter_map(|v| {
@@ -506,7 +506,7 @@ impl View{
         (View::create(&new_shape, Some(&new_strides), new_offset, new_mask), hm)
     }
 
-    fn reshape(&self, new_shape: &Vec<BTypes>) -> Option<View>{
+    pub fn reshape(&self, new_shape: &Vec<BTypes>) -> Option<View>{
         if &self.shape == new_shape{
             return Some(self.clone())
         }
@@ -715,7 +715,7 @@ impl View{
         None
     }
 
-    fn invert(&self, out_shape: &[BTypes]) -> Option<View>{
+    pub fn invert(&self, out_shape: &[BTypes]) -> Option<View>{
         let mut ret = View::create(&self.shape, None, BTypes::Int(0.0), None);
         if let Some(m) = &self.mask{
             ret = ret.shrink(m);
@@ -741,7 +741,7 @@ impl View{
         
     }
 
-    fn minify(&self) -> View{
+    pub fn minify(&self) -> View{
         let min_shape = merge_dims(&self.shape.iter().map(|x|{
             match &x{
                 BTypes::Int(i) => i.floor() as isize,
@@ -816,26 +816,26 @@ impl View{
         }).collect_vec(), Some(&self.strides), &self.offset + &offset, mask)
     }
 
-    fn pad(self, arg: &Vec<(isize, isize)>) -> View{
-        assert!(arg.iter().all(|(b, e)| b>= &0 && e>=&0) && arg.len() == self.shape.len(), "{}", format!("{:?}, {:?}", self.shape, arg));
+    pub fn pad(&self, arg: &Vec<(BTypes, BTypes)>) -> View{
+        assert!(arg.iter().all(|(b, e)| b>= &BTypes::Int(0.0) && e>=&BTypes::Int(0.0)) && arg.len() == self.shape.len(), "{}", format!("{:?}, {:?}", self.shape, arg));
         if arg.iter().any(|&(b ,e)|{
-            b != 0 || e != 0
+            b != BTypes::Int(0.0) || e != BTypes::Int(0.0)
         }){
             let zvarg = self.shape.iter().zip(arg.iter()).map(|(s, (b,e))|{
-                (BTypes::Int(-b as f64), s + &BTypes::Int(e.clone() as f64))
+                (-b, s + e)
             }).collect_vec();
     
             let mask = self.shape.iter().zip(arg.iter()).map(|(s, (b,e))|{
-                (BTypes::Int(b.clone() as f64), s + &BTypes::Int(b.clone() as f64))
+                (b.clone(), s + b)
             }).collect_vec();
     
             self._unsafe_resize(&zvarg, Some(mask))
         }else{
-            self
+            self.clone()
         }
     }
 
-    fn shrink(&self, arg: &Vec<(BTypes, BTypes)>) ->  View{
+    pub fn shrink(&self, arg: &Vec<(BTypes, BTypes)>) ->  View{
         assert!(self.shape.iter().zip(arg.iter()).all(|(s, (b, e))|{
             &BTypes::Int(0.0) <= b && b<=e && e<=s
         }) && arg.len() == self.shape.len(), "{}", format!("invalid shrink {:?} for {:?}", arg, self.shape));
@@ -843,7 +843,7 @@ impl View{
         return self._unsafe_resize(arg, None)
     }
 
-    fn expand(&self, new_shape: &Vec<BTypes>) -> View{
+    pub fn expand(&self, new_shape: &Vec<BTypes>) -> View{
         if new_shape.len() != self.shape.len(){
             panic!("expand arg {:?} must hasve same number of dims as shape {:?}", new_shape, self.shape)
         }
@@ -887,7 +887,7 @@ impl View{
 
     }
 
-    fn permute(self, axis: &Vec<isize>) -> View{
+    pub fn permute(&self, axis: &Vec<isize>) -> View{
         assert!(axis.iter().all(|x|{
             x >= &0 && x < &(self.shape.len() as isize)
         }), "invalid permute {:?} for {:?}", axis, self.shape);
@@ -898,7 +898,7 @@ impl View{
             self.shape[a.clone() as usize].clone()
         }).collect::<Vec<BTypes>>(), Some(&axis.iter().map(|a|{
             self.strides[a.clone() as usize].clone()
-        }).collect::<Vec<BTypes>>()), self.offset, {
+        }).collect::<Vec<BTypes>>()), self.offset.clone(), {
             match &self.mask{
                 Some(m) => Some(axis.iter().map(|a|{
                     m[a.clone() as usize].clone()
@@ -908,7 +908,7 @@ impl View{
         })
     }
 
-    fn stride(&self, mul: &[isize]) -> View{
+    pub fn stride(&self, mul: &[isize]) -> View{
         assert!(mul.iter().all(|x|{
             x != &0
         }), "{}", format!("invalid stride {:?} for {:?}", mul, self.shape));
@@ -982,7 +982,7 @@ impl<'a> std::ops::Add<&'a View> for &'a View
             
             return Some(merged?.pad(&vm1.mask.clone()?.iter().zip(vm1.shape.iter()).filter_map(|((b,e), s)|{
                 if let (BTypes::Int(i), BTypes::Int(ii), BTypes::Int(iii)) = (b, e, s){
-                    return Some((i.clone() as isize, (iii-ii) as isize))
+                    return Some((b.clone(), (s-e)))
                 }
                 None
             }).collect()))

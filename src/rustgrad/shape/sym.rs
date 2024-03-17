@@ -5,20 +5,23 @@ use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 use std::ops::{Mul, Neg, Rem, Sub};
 use std::rc::Weak;
+use std::sync::{Arc, Mutex};
 use std::{any::Any, collections::HashMap, fmt::Debug, ops::Deref, rc::Rc};
 
+use itertools::Itertools;
+use num::complex::ComplexFloat;
 use num::integer::gcd;
 use num::{Num, ToPrimitive};
 
-use crate::rustgrad::helpers::partition;
+use crate::rustgrad::helpers::{partition, ContextVar, DEBUG, REPR};
 type N = Rc<NodeTypes>;
-pub enum Context {
-    DEBUG,
-    REPR,
-}
+// pub enum Context {
+//     DEBUG,
+//     REPR,
+// }
 #[derive(Debug, Clone)]
 pub struct Variable {
-    expr: String,
+    pub expr: String,
     min: Option<f64>,
     max: Option<BTypes>,
     pub val: Option<f64>,
@@ -31,8 +34,8 @@ pub enum BTypes {
 }
 #[derive(Debug, Clone)]
 pub struct OpNode {
-    a: N,
-    b: BTypes,
+    pub a: N,
+    pub b: BTypes,
     min: Option<f64>,
     max: Option<BTypes>,
     ptr: RefCell<Option<Weak<NodeTypes>>>,
@@ -46,7 +49,7 @@ pub struct NumNode {
 }
 #[derive(Debug, Clone)]
 pub struct RedNode {
-    nodes: Vec<N>,
+    pub nodes: Vec<N>,
     min: Option<f64>,
     max: Option<BTypes>,
     ptr: RefCell<Option<Weak<NodeTypes>>>,
@@ -63,7 +66,7 @@ pub enum NodeTypes {
     AndNode(RedNode),
 }
 pub trait NodeMethods {
-    fn render(&self, ops: &Option<Box<dyn Any>>, ctx: &Option<Context>) -> String;
+    fn render(&self, ops: &Option<Box<dyn Any>>, ctx: &Option<Arc<Mutex<ContextVar>>>) -> String;
 
     fn vars(&self) -> Vec<N>;
 
@@ -92,13 +95,14 @@ pub trait NodeMethods {
 }
 
 impl NodeMethods for NodeTypes {
-    fn render(&self, ops: &Option<Box<dyn Any>>, ctx: &Option<Context>) -> String {
+    fn render(&self, ops: &Option<Box<dyn Any>>, ctx: &Option<Arc<Mutex<ContextVar>>>) -> String {
         match self {
             NodeTypes::Variable(v) => ops
                 .as_ref()
                 .and_then(|_| {
                     ctx.as_ref().map(|c| {
-                        if let Context::DEBUG = c {
+                        let c_lk = c.clone().deref().lock().unwrap().deref();
+                        if c_lk == DEBUG.clone().deref().lock().unwrap().deref() {
                             format!(
                                 "{}[{:?}-{:?}{}]",
                                 &v.expr,
@@ -108,7 +112,7 @@ impl NodeMethods for NodeTypes {
                                     .as_ref()
                                     .map_or_else(|| String::new(), |val| format!("={}", val))
                             )
-                        } else if let Context::REPR = c {
+                        } else if REPR.clone().deref().lock().unwrap().deref() == c_lk {
                             format!(
                                 "Variable('{}', {:?}, {:?}){}",
                                 &v.expr,
@@ -128,7 +132,8 @@ impl NodeMethods for NodeTypes {
                 .as_ref()
                 .and_then(|_| {
                     ctx.as_ref().map(|c| {
-                        if let Context::REPR = c {
+                        let c_lk = c.clone().deref().lock().unwrap().deref();
+                        if REPR.clone().deref().lock().unwrap().deref() == c_lk {
                             format!("NumNode({})", &n.b)
                         } else {
                             format!("{}", &n.b)
@@ -254,7 +259,7 @@ impl NodeMethods for NodeTypes {
     }
 
     fn key(&self) -> String {
-        self.render(&None, &Some(Context::DEBUG))
+        self.render(&None, &Some(DEBUG.clone()))
     }
 
     fn hash(&self) -> u64 {
@@ -646,7 +651,7 @@ impl Debug for BTypes {
     }
 }
 
-fn sym_render(a: &BTypes, ops: &Option<Box<dyn Any>>, ctx: &Option<Context>) -> String {
+fn sym_render(a: &BTypes, ops: &Option<Box<dyn Any>>, ctx: &Option<Arc<Mutex<ContextVar>>>) -> String {
     match a {
         BTypes::Int(i) => {
             format!("{}", i)
@@ -654,7 +659,7 @@ fn sym_render(a: &BTypes, ops: &Option<Box<dyn Any>>, ctx: &Option<Context>) -> 
         BTypes::Node(n) => n.clone().render(&ops, &ctx),
     }
 }
-fn render_mulnode(m: &OpNode, ops: &Option<Box<dyn Any>>, ctx: &Option<Context>) -> String {
+fn render_mulnode(m: &OpNode, ops: &Option<Box<dyn Any>>, ctx: &Option<Arc<Mutex<ContextVar>>>) -> String {
     match m.a.clone().deref() {
         NodeTypes::Variable(v_a) => match &m.b {
             BTypes::Node(n) => match n.clone().deref() {
@@ -761,6 +766,10 @@ impl NodeTypes {
         }
 
         nd
+    }
+
+    pub fn new_ge(lhs: N, b: BTypes) -> N{
+        create_lt_node(-lhs.deref(), &-&b - &BTypes::Int(1.0))
     }
     fn new_mul(a: N, b: BTypes) -> N {
         let (min, max) = NodeTypes::get_bounds(&NodeTypes::MulNode(OpNode {
@@ -886,7 +895,7 @@ impl NodeTypes {
 
         nd
     }
-    fn floordiv(&self, b: &BTypes, factoring_allowed: bool) -> Rc<Self> {
+    pub fn floordiv(&self, b: &BTypes, factoring_allowed: bool) -> Rc<Self> {
         match self {
             NodeTypes::MulNode(n) => match &n.b {
                 BTypes::Int(i) => match b {
@@ -2017,4 +2026,125 @@ impl Neg for &BTypes{
             BTypes::Node(n) => BTypes::Node(-n.clone().deref())
         }
     }
+}
+
+fn create_lt_node(lhs: N, b: BTypes) -> N{
+    let mut mut_b = b;
+    let mut n_lhs = lhs;
+    if let NodeTypes::SumNode(s) = n_lhs.clone().deref(){
+        if let BTypes::Int(i) = &mut_b{
+            let mut new_sum = vec![];
+            s.nodes.iter().for_each(|x|{
+                if let NodeTypes::NumNode(n) = x.clone().deref(){
+                    mut_b = &mut_b - &BTypes::Int(n.b.clone());
+                }else{
+                    new_sum.push(x.clone())
+                }
+            });
+
+            n_lhs = NodeTypes::sum(&new_sum);
+            let nodes = {
+                if let NodeTypes::SumNode(ss) = n_lhs.clone().deref(){
+                    ss.nodes.clone()
+                }else{
+                    vec![n_lhs.clone()]
+                }
+            };
+
+            assert!(nodes.iter().all(|node|{
+                match node.clone().deref(){
+                    NodeTypes::MulNode(m) => true,
+                    NodeTypes::AndNode(a) | NodeTypes::SumNode(a) => {
+                        false
+                    },
+                    NodeTypes::DivNode(n)| NodeTypes::LtNode(n) | NodeTypes::ModNode(n) => {
+                        if let BTypes::Int(_) = n.b{
+                            true
+                        }else{
+                            false
+                        }
+                    },
+                    NodeTypes::Variable(v) => {
+                        false
+                    }
+                    NodeTypes::NumNode(n) => {
+                        true
+                    }
+                }
+            }), "not supported");
+
+            let (muls, others) = partition(nodes, |x|{
+                match x.clone().deref(){
+                    NodeTypes::MulNode(m) => m.b > BTypes::Int(0.0) && &x.max().unwrap() >= &mut_b,
+                    _ => false
+                }
+            });
+
+            if !muls.is_empty(){
+                let mut mul_gcd = mut_b.clone();
+                muls.iter().for_each(|x| {
+                    match x.clone().deref(){
+                        NodeTypes::DivNode(n) | NodeTypes::LtNode(n) | NodeTypes::ModNode(n) | NodeTypes::MulNode(n) => {
+                            match &n.b{
+                                BTypes::Int(i) =>{
+                                    if let BTypes::Int(ii) = &mul_gcd{
+                                        mul_gcd = BTypes::Int(gcd(ii.clone() as isize, i.clone() as isize) as f64)
+                                    }else{
+                                        panic!()
+                                    }
+                                    
+                                }
+                                _ => panic!()
+                            }
+                        }
+                        NodeTypes::NumNode(n) => {
+                            if let BTypes::Int(ii) = &mul_gcd{
+                                    mul_gcd = BTypes::Int(gcd(ii.clone() as isize, n.b.clone() as isize) as f64)
+                                }else{
+                                    panic!()
+                            }
+                        }
+                        _ => panic!()
+                    }
+                });
+
+                let all_others = NodeTypes::sum(&others);
+                if all_others.clone().min().unwrap() >= 0.0 && &all_others.clone().max().unwrap() < &mul_gcd{
+                    n_lhs = NodeTypes::sum(&muls.iter().map(|mul| mul.clone().floordiv(&mul_gcd, true)).collect_vec());
+                    mut_b = mut_b.floordiv(&mul_gcd, true);
+                }
+            }
+        }
+        if let NodeTypes::SumNode(_) = n_lhs.clone().deref(){
+            return create_node(NodeTypes::new_lt(n_lhs, mut_b));
+        } else{
+            return create_lt_node(n_lhs, mut_b);
+        }
+    }
+    if let NodeTypes::MulNode(mul_n) = n_lhs.clone().deref(){
+        if let BTypes::Node(n) = &mut_b{
+            if let BTypes::Node(nn) = &mul_n.b{
+                if &mul_n.b == &BTypes::Int(-1.0){
+                    return create_node(NodeTypes::new_lt(n_lhs, mut_b));
+                }
+                return create_node(NodeTypes::new_lt(n_lhs, mut_b));
+            }
+            return create_node(NodeTypes::new_lt(n_lhs, mut_b));
+        }
+        let sgn = {
+            if mul_n.b > BTypes::Int(0.0){
+                0.0
+            }else{
+                -1.0
+            }
+        };
+        let n_abs = {
+            match &mul_n.b{
+                BTypes::Int(i) => BTypes::Int(i.abs()),
+                BTypes::Node(_) => panic!()
+            }
+        };
+        return create_node(NodeTypes::new_lt(mul_n.a.clone().deref() * &sgn, (&(&mut_b + &n_abs) - &BTypes::Int(1.0)).floordiv(&mul_n.b, true)));
+    }
+    return create_node(NodeTypes::new_lt(n_lhs, mut_b));
 }

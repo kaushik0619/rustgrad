@@ -48,8 +48,8 @@ lazy_static! {
     pub static ref BEAM: Arc<Mutex<ContextVar>> = Arc::new(Mutex::new(ContextVar::new("BEAM", 0)));
     pub static ref NOOPT: Arc<Mutex<ContextVar>> = Arc::new(Mutex::new(ContextVar::new("NOOPT", 0)));
     pub static ref GRAPH: Arc<Mutex<ContextVar>> = Arc::new(Mutex::new(ContextVar::new("GRAPH", 0)));
-
-
+    pub static ref MERGE_VIEW: Arc<Mutex<ContextVar>> = Arc::new(Mutex::new(ContextVar::new("MERGE_VIEW", 0)));
+    pub static ref REPR: Arc<Mutex<ContextVar>> = Arc::new(Mutex::new(ContextVar::new("REPR", 0)));
     pub static ref GRAPHPATH: Arc<String> =  match getenv("GRAPHPATH".to_string(), "/temp/net".to_string()){
         Ok(s) => Arc::new(s),
         Err(s) => Arc::new(s)
@@ -506,7 +506,7 @@ impl<'a> Drop for Context {
 #[derive(Debug)]
 pub struct ContextVar {
     key: Arc<String>,
-    value: isize,
+    pub value: isize,
 }
 
 impl ContextVar {
