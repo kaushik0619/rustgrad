@@ -445,7 +445,7 @@ impl Error for GraphError {}
 // xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
 
 pub struct Context {
-    stack: Arc<RefCell<Vec<HashMap<String, isize>>>>,
+    pub stack: Arc<RefCell<Vec<HashMap<String, isize>>>>,
 }
 
 impl Context {
