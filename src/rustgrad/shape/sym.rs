@@ -664,6 +664,27 @@ fn sym_render(a: &BTypes, ops: &Option<Box<dyn Any>>, ctx: &Option<Arc<Mutex<Con
         BTypes::Node(n) => n.clone().render(&ops, &ctx),
     }
 }
+
+
+pub fn sym_infer(a: &BTypes, var_vals: HashMap<Rc<NodeTypes>, isize>) -> isize{
+    match a{
+        BTypes::Node(n) => {
+            let mut hm: HashMap<N, N> =  HashMap::new();
+            var_vals.iter().for_each(|(k, v)| {hm.insert(k.clone(), NumNode::init(v));});
+            let ret = n.clone().substitute(&hm);
+
+            if let NodeTypes::NumNode(nn) = ret.deref(){
+                return nn.b
+            }else{
+                panic!("{}", format!("sym infer didnt produce NumNode from {:?} with {:?}", n.deref(), var_vals))
+            }
+        },
+        BTypes::Int(i) => {
+            i.clone()
+        }
+    }
+    
+}
 fn render_mulnode(m: &OpNode, ops: &Option<Box<dyn Any>>, ctx: &Option<Arc<Mutex<ContextVar>>>) -> String {
     match m.a.clone().deref() {
         NodeTypes::Variable(v_a) => match &m.b {

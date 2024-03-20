@@ -3,7 +3,7 @@ use std::{any::Any, borrow::BorrowMut, cell::RefCell, collections::{hash_map::De
 use itertools::Itertools;
 use lazy_static::lazy_static;
 
-use super::{dtype::{DType, DTypes, DTYPES_DICT}, helpers::Context, shape::{shapetracker::ShapeTracker, sym::{BTypes, NodeTypes}}};
+use super::{codegen::kernel::LocalBuffer, dtype::{DType, DTypes, DTYPES_DICT}, helpers::Context, shape::{shapetracker::ShapeTracker, sym::{BTypes, NodeTypes}}};
 lazy_static!{
     pub static ref InterpretedFlopCounter: HashMap<Op, >
 }
@@ -90,7 +90,7 @@ struct ScheduleItem{
 }
 
 #[derive(Clone)]
-struct LazyOp{
+pub struct LazyOp{
     op: Op,
     src: Vec<Rc<LazyOp>>,
     arg: Option<Items>,
@@ -193,7 +193,7 @@ impl Hash for LazyOp{
 }
 
 #[derive(Clone)]
-struct FlopCounter{
+pub struct FlopCounter{
     shape: Vec<isize>,
     dtype: DTypes,
     flops: BTypes,
@@ -225,7 +225,7 @@ fn get_lazyops_info(ast: Rc<LazyOp>) -> FlopCounter{
                 return BinaryOps::interpreted_flop_counter(ast.clone().deref().op, self_n_frnds, args)
             },
             Op::BufferOps(_) => {
-                return  Buffers::interpreted_flop_counter(ast.clone().deref().op, self_n_frnds, args);
+                return  BufferTypes::interpreted_flop_counter(ast.clone().deref().op, self_n_frnds, args);
             },
             Op::UnaryOps(_) => {
                 return UnaryOps::interpreted_flop_counter(ast.clone().deref().op, self_n_frnds, args);
@@ -243,12 +243,13 @@ fn get_lazyops_info(ast: Rc<LazyOp>) -> FlopCounter{
 }
 
 #[derive(Debug, PartialEq, Hash, Clone)]
-enum Buffers{
+pub enum BufferTypes{
     ConstBuffer(ConstBuffer),
-    MemBuffer(MemBuffer)
+    MemBuffer(MemBuffer),
+    LocalBuffer(LocalBuffer)
 }
 
-impl Buffers{
+impl BufferTypes{
     fn interpreted_flop_counter(op: Op, self_n_frnds: Vec<FlopCounter>, arg: Option<Items>) -> FlopCounter{
         match op{
             Op::BufferOps(b) => {
@@ -258,7 +259,7 @@ impl Buffers{
                         match &arg.unwrap(){
                             Items::Buffer(bff) => {
                                 match bff{
-                                    Buffers::MemBuffer(c) => FlopCounter::new({
+                                    BufferTypes::MemBuffer(c) => FlopCounter::new({
                                         c.st.shape().into_iter().map(|x|{
                                             match x{
                                                 BTypes::Int(i) => i,
@@ -278,7 +279,7 @@ impl Buffers{
                         match &arg.unwrap(){
                             Items::Buffer(bff) => {
                                 match bff{
-                                    Buffers::MemBuffer(c) => FlopCounter::new({
+                                    BufferTypes::MemBuffer(c) => FlopCounter::new({
                                         c.st.shape().into_iter().map(|x|{
                                             match x{
                                                 BTypes::Int(i) => i,
@@ -286,14 +287,15 @@ impl Buffers{
                                             }
                                         }).collect_vec()
                                     }, c.dtype, BTypes::Int(0), HashMap::new()),
-                                    Buffers::ConstBuffer(c) => FlopCounter::new({
+                                    BufferTypes::ConstBuffer(c) => FlopCounter::new({
                                         c.st.shape().into_iter().map(|x|{
                                             match x{
                                                 BTypes::Int(i) => i,
                                                 BTypes::Node(_) => panic!()
                                             }
                                         }).collect_vec()
-                                    }, c.dtype, BTypes::Int(0), HashMap::new())
+                                    }, c.dtype, BTypes::Int(0), HashMap::new()),
+                                    _ => panic!()
                                 }
                             }
                             _ => panic!()
@@ -305,7 +307,7 @@ impl Buffers{
                         match &arg.unwrap(){
                             Items::Buffer(bff) => {
                                 match bff{
-                                    Buffers::MemBuffer(s) => FlopCounter::new({
+                                    BufferTypes::MemBuffer(s) => FlopCounter::new({
                                         s.st.shape().into_iter().map(|x|{
                                             match x{
                                                 BTypes::Int(i) => i,
@@ -318,7 +320,7 @@ impl Buffers{
                                         x.insert(s.idx, s.dtype.itemsize() as usize*s.st.real_size() as usize);
                                         x
                                     }),
-                                    Buffers::ConstBuffer(s) => panic!()
+                                    _ => panic!()
                                 }
                             }
                             _ => panic!()
@@ -441,11 +443,11 @@ impl TernaryOps{
 }
 
 #[derive(Debug, PartialEq, Hash, Clone)]
-enum Items {
+pub enum Items {
     Axis(Vec<isize>),
     Op(Op),
     Dtype(DTypes),
-    Buffer(Buffers)
+    Buffer(BufferTypes)
 }
 
 struct GlobalCounters{
