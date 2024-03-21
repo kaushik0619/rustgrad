@@ -76,7 +76,7 @@ impl _Device{
         }
     }
 
-    fn default(&self) -> String{
+    pub fn default(&self) -> String{
         let device_from_env = self.devices.iter().fold(None, |val, ele| {
             if let Ok(value) = env::var(ele) {
                 if value == "1" {
@@ -104,7 +104,7 @@ impl _Device{
         panic!()
     }
 
-    fn index(&self, index: &str) -> Result<Compiled, Option<Compiled>>{
+    pub fn index(&self, index: &str) -> Result<Compiled, Option<Compiled>>{
        self.__get_canonicalize_item(&self.canonicalize(Some(index)))
     }
 }
@@ -149,7 +149,10 @@ fn update_stats(name: &str, op_estimate: BTypes, mem_estimate: BTypes, var_vals:
     };
     let op_estimate = sym_infer(, var_vals)
 }
-struct Compiled{}
+#[derive(Debug)]
+struct Compiled{
+
+}
 
 struct Buffer{
 

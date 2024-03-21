@@ -323,7 +323,7 @@ pub struct ImageDType{
     name: String,
     fmt: Option<char>,
     count: isize,
-    shape: Vec<isize>,
+    pub shape: Vec<isize>,
     base: DType
 }
 

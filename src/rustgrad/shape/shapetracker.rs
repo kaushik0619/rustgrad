@@ -96,7 +96,7 @@ impl ShapeTracker{
         return self.views[self.views.len() - 1].shape.clone()
     }
 
-    fn size(&self) -> usize{
+    pub fn size(&self) -> usize{
         return self.views[self.views.len() - 1].clone().deref().size() as usize;
     }
 
@@ -157,7 +157,7 @@ impl ShapeTracker{
         return (ShapeTracker::new(unbound_views), merge_maps(var_vals.into_iter()))
     }
 
-    fn real_strides(&self, ignore_valid: bool) -> Vec<Option<BTypes>>{
+    pub fn real_strides(&self, ignore_valid: bool) -> Vec<Option<BTypes>>{
         if self.views.len() == 1 && self.views[0].mask.is_none(){
             return self.views[0].strides.clone().into_iter().map(|x| Some(x)).collect();
         }
@@ -317,7 +317,7 @@ impl ShapeTracker{
             var
         })
     }
-    fn permute(&self, axis: &Vec<isize>) -> Rc<ShapeTracker>{
+    pub fn permute(&self, axis: &Vec<isize>) -> Rc<ShapeTracker>{
         ShapeTracker::new({
             let mut var = self.views[0..self.views.len() - 1].to_vec();
             var.push(self.views[self.views.len() - 1].permute(axis).into());
@@ -333,7 +333,7 @@ impl ShapeTracker{
         })
     }
 
-    fn reshape(&self, new_shape: &Vec<BTypes>) -> Rc<ShapeTracker>{
+    pub fn reshape(&self, new_shape: &Vec<BTypes>) -> Rc<ShapeTracker>{
         let new_view = self.views[self.views.len() - 1].reshape(new_shape);
         if MERGE_VIEW.clone().deref().lock().unwrap().deref().value == 1 && new_view.is_some(){
             return ShapeTracker::new({

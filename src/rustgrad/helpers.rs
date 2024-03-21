@@ -36,6 +36,8 @@ use std::time::Duration;
 use std::time::Instant;
 use std::usize::MAX;
 use std::{env, result, vec};
+
+use super::shape::sym::BTypes;
 lazy_static! {
     static ref OSX: Arc<bool> = Arc::new(cfg!(target_os = "macos"));
     static ref CI: Arc<bool> = Arc::new(env::var("CI").is_ok());
@@ -331,18 +333,18 @@ fn get_child<'a>(
     Some(current_obj)
 }
 
-pub fn get_contraction(old_shape: &[usize], new_shape: &[usize]) -> Option<Vec<Vec<f64>>> {
-    let acc_old: Vec<f64> = old_shape
+pub fn get_contraction(old_shape: &[BTypes], new_shape: &[BTypes]) -> Option<Vec<Vec<usize>>> {
+    let acc_old: Vec<BTypes> = old_shape
         .iter()
-        .scan(1.0, |acc, &x| {
-            *acc *= x as f64;
+        .scan(BTypes::Int(1), |acc, x| {
+            *acc = &*acc * x;
             Some(*acc)
         })
         .collect();
-    let acc_new: Vec<f64> = new_shape
+    let acc_new: Vec<BTypes> = new_shape
         .iter()
-        .scan(1.0, |acc, &x| {
-            *acc *= x as f64;
+        .scan(BTypes::Int(1), |acc, x| {
+            *acc = &*acc * x;
             Some(*acc)
         })
         .collect();
@@ -352,15 +354,15 @@ pub fn get_contraction(old_shape: &[usize], new_shape: &[usize]) -> Option<Vec<V
         .map(|&acc| {
             acc_old
                 .iter()
-                .position(|&x| (x as usize) == acc as usize)
+                .position(|&x| x == acc )
                 .unwrap_or(0)
                 + 1
         })
         .collect();
 
-    let contraction: Vec<Vec<f64>> = (0..split.len())
+    let contraction: Vec<Vec<usize>> = (0..split.len())
         .map(|i| (if i == 0 { 0 } else { split[i - 1] })..split[i])
-        .map(|range| range.map(|idx| idx as f64).collect())
+        .map(|range| range.map(|idx| idx).collect())
         .collect();
 
     Some(contraction)

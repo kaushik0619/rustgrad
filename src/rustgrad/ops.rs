@@ -39,7 +39,7 @@ enum ReduceOps{
     MAX,
 }
 #[derive(PartialEq, Clone, Debug, Hash)]
-enum BufferOps{
+pub enum BufferOps{
     LOAD,
     CONST,
     STORE
@@ -56,7 +56,7 @@ enum LoadOps{
     ASSIGN
 }
 #[derive(PartialEq, Clone, Debug, Hash)]
-enum Op{
+pub enum Op{
     UnaryOps(UnaryOps),
     BinaryOps(BinaryOps),
     ReduceOps(ReduceOps),
@@ -65,17 +65,17 @@ enum Op{
     BufferOps(BufferOps)
 }
 #[derive(Debug, PartialEq, Hash, Clone)]
-struct MemBuffer{
+pub struct MemBuffer{
     idx: usize,
-    dtype: DTypes,
-    st: Rc<ShapeTracker>
+    pub dtype: DTypes,
+    pub st: Rc<ShapeTracker>
 }
 
 #[derive(Debug, PartialEq, Clone)]
-struct ConstBuffer{
-    val: f64,
-    dtype: DTypes,
-    st: Rc<ShapeTracker>
+pub struct ConstBuffer{
+    pub val: f64,
+    pub dtype: DTypes,
+    pub st: Rc<ShapeTracker>
 }
 impl Hash for ConstBuffer{
     fn hash<H: Hasher>(&self, state: &mut H) {
@@ -91,9 +91,9 @@ struct ScheduleItem{
 
 #[derive(Clone)]
 pub struct LazyOp{
-    op: Op,
+    pub op: Op,
     src: Vec<Rc<LazyOp>>,
-    arg: Option<Items>,
+    pub arg: Option<Items>,
     ptr: RefCell<Option<Weak<Self>>>
 }
 
@@ -159,13 +159,13 @@ impl LazyOp
         hasher.finish()
     }
     
-    fn lazyops(&self) -> Vec<Rc<LazyOp>>{
+    pub fn lazyops(&self) -> Vec<Rc<LazyOp>>{
         let mut x: Vec<Rc<LazyOp>> = self.src.iter().map(|x| x.clone().lazyops().into_iter().map(|item| item.clone()).collect::<Vec<Rc<LazyOp>>>()).flatten().collect_vec();
         x.push(self.ptr());
         x
     }
 
-    fn vars(&self) -> Vec<Rc<NodeTypes>>{
+    pub fn vars(&self) -> Vec<Rc<NodeTypes>>{
         let mut union_set: HashSet<Rc<NodeTypes>> = HashSet::new();
         for x in &self.lazyops(){
             if let Op::BufferOps(_) = &x.op{
@@ -186,6 +186,11 @@ impl LazyOp
     }
 }
 
+impl PartialEq for LazyOp{
+    fn eq(&self, other: &Self) -> bool {
+        self.op == other.op && self.src == other.src && self.arg == other.arg
+    }
+}
 impl Hash for LazyOp{
     fn hash<H: Hasher>(&self, state: &mut H) {
         (self.op, self.src, self.arg).hash(state)
@@ -215,7 +220,7 @@ impl FlopCounter{
     }
 }
 
-fn get_lazyops_info(ast: Rc<LazyOp>) -> FlopCounter{
+pub fn get_lazyop_info(ast: Rc<LazyOp>) -> FlopCounter{
     let self_n_frnds = ast.clone().src.iter().map(|x| run_ast(x.clone())).collect_vec();
     fn run_ast(ast: Rc<LazyOp>) -> FlopCounter{
         let self_n_frnds = ast.clone().deref().src.into_iter().map(|x|run_ast(x)).collect_vec();

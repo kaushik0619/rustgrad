@@ -24,7 +24,7 @@ fn canonicalize_strides(shape: &Vec<BTypes>, strides: &Vec<BTypes>) -> Vec<BType
 }
 
 
-fn strides_for_shape(shape: &Vec<BTypes>) -> Vec<BTypes> {
+pub fn strides_for_shape(shape: &Vec<BTypes>) -> Vec<BTypes> {
     if shape.is_empty() {
         return Vec::new();
     }
